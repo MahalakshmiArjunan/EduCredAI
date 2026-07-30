@@ -1,23 +1,30 @@
 import { useEffect, useMemo, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { api } from "@/lib/api";
+import { api, API } from "@/lib/api";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
-import { ChevronLeft, ChevronRight, CheckCircle2, XCircle, Send } from "lucide-react";
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { ChevronLeft, ChevronRight, CheckCircle2, Send, FileText, BookOpen } from "lucide-react";
 import { toast } from "sonner";
 
 export default function TakeAssignment() {
   const { id } = useParams();
   const nav = useNavigate();
   const [data, setData] = useState(null);
+  const [chapter, setChapter] = useState(null);
+  const [pdfOpen, setPdfOpen] = useState(false);
   const [idx, setIdx] = useState(0);
   const [answers, setAnswers] = useState({});
   const [result, setResult] = useState(null);
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => { api.get(`/assignments/${id}`).then(r => setData(r.data)); }, [id]);
+  useEffect(() => {
+    if (data?.chapterId) api.get(`/chapters/${data.chapterId}`).then(r => setChapter(r.data)).catch(()=>{});
+  }, [data?.chapterId]);
+  const pdfUrl = chapter?.sourceFileUrl ? `${API.replace(/\/api$/, "")}${chapter.sourceFileUrl}` : null;
 
   const q = data?.questions?.[idx];
   const total = data?.questions?.length || 0;
@@ -116,6 +123,31 @@ export default function TakeAssignment() {
           </Button>
         )}
       </div>
+
+      {/* Reference PDF drawer */}
+      <Sheet open={pdfOpen} onOpenChange={setPdfOpen}>
+        <SheetContent side="right" className="!max-w-none w-[min(720px,90vw)] sm:!max-w-none p-0 flex flex-col" data-testid="assn-reference-drawer">
+          <SheetHeader className="p-4 border-b bg-slate-50">
+            <SheetTitle className="flex items-center gap-2"><BookOpen size={18}/> Reference · {chapter?.title || "Chapter"}</SheetTitle>
+          </SheetHeader>
+          <div className="flex-1 min-h-0">
+            {pdfUrl ? (
+              <iframe title="Assignment reference PDF" src={pdfUrl} className="w-full h-full" />
+            ) : (
+              <div className="p-6 space-y-3 overflow-y-auto h-full">
+                <p className="text-sm text-slate-600">No source PDF for this chapter. Here are the topic summaries:</p>
+                {(chapter?.extractedTopics || []).map((t, i) => (
+                  <div key={t.topicId} className="border rounded-lg p-3 bg-white">
+                    <div className="font-semibold text-slate-900">{i+1}. {t.title}</div>
+                    <p className="text-sm text-slate-600 mt-1 leading-relaxed">{t.contentChunk}</p>
+                  </div>
+                ))}
+                {!chapter && <div className="text-slate-400 text-sm">No linked chapter for this assignment.</div>}
+              </div>
+            )}
+          </div>
+        </SheetContent>
+      </Sheet>
     </div>
   );
 }

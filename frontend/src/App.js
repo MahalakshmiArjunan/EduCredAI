@@ -15,6 +15,7 @@ import StudyPlan from "@/pages/StudyPlan";
 import PracticeZone from "@/pages/PracticeZone";
 import AdminReview from "@/pages/AdminReview";
 import Results from "@/pages/Results";
+import ChapterViewer from "@/pages/ChapterViewer";
 import TeacherAssignments from "@/pages/TeacherAssignments";
 import AssignmentCreate from "@/pages/AssignmentCreate";
 import AssignmentDetail from "@/pages/AssignmentDetail";
@@ -51,6 +52,7 @@ export default function App() {
           <Route path="/plan" element={<Protected><StudyPlan /></Protected>} />
           <Route path="/results" element={<Protected><Results /></Protected>} />
           <Route path="/upload" element={<Protected><UploadChapter /></Protected>} />
+          <Route path="/chapters/:id" element={<Protected><ChapterViewer /></Protected>} />
           <Route path="/quiz/:sessionId" element={<Protected><AdaptiveQuiz /></Protected>} />
           <Route path="/admin/flagged" element={<Protected><AdminReview /></Protected>} />
           <Route path="/assignments" element={<Protected><TeacherAssignments /></Protected>} />

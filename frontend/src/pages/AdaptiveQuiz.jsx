@@ -1,10 +1,11 @@
 import { useEffect, useState, useMemo } from "react";
 import { useParams, useNavigate, useLocation } from "react-router-dom";
-import { api } from "@/lib/api";
+import { api, API } from "@/lib/api";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Timer, Lightbulb, ChevronRight, ChevronLeft, Flame, Info, CheckCircle2, XCircle } from "lucide-react";
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { Timer, Lightbulb, ChevronRight, ChevronLeft, Flame, Info, CheckCircle2, XCircle, FileText, BookOpen } from "lucide-react";
 import { toast } from "sonner";
 
 export default function AdaptiveQuiz() {
@@ -17,10 +18,20 @@ export default function AdaptiveQuiz() {
   const [feedback, setFeedback] = useState(null);
   const [elapsed, setElapsed] = useState(0);
   const [submitting, setSubmitting] = useState(false);
+  const [chapter, setChapter] = useState(null);
+  const [pdfOpen, setPdfOpen] = useState(false);
 
   useEffect(() => {
     if (!state) api.get(`/assessments/${sessionId}`).then(r => setState({ ...r.data, question: null }));
   }, [sessionId]); // eslint-disable-line
+
+  // Fetch chapter (for PDF reference)
+  useEffect(() => {
+    const chId = state?.chapterId || location.state?.question?.chapterId;
+    if (chId) api.get(`/chapters/${chId}`).then(r => setChapter(r.data)).catch(()=>{});
+  }, [state?.chapterId, location.state]); // eslint-disable-line
+
+  const pdfUrl = chapter?.sourceFileUrl ? `${API.replace(/\/api$/, "")}${chapter.sourceFileUrl}` : null;
 
   useEffect(() => {
     const t = setInterval(() => setElapsed(e => e+1), 1000);
@@ -74,9 +85,14 @@ export default function AdaptiveQuiz() {
     <div className="max-w-[1400px] mx-auto grid grid-cols-1 xl:grid-cols-[1fr_320px] gap-6" data-testid="adaptive-quiz">
       <div className="space-y-4">
         <Card className="v-card p-6" data-testid="quiz-header">
-          <div className="flex items-center gap-3">
-            <Badge className="bg-pink-100 text-pink-700 border-0 uppercase text-xs">Grade 10</Badge>
-            <div className="font-bold text-lg">Adaptive Practice</div>
+          <div className="flex items-center gap-3 justify-between">
+            <div className="flex items-center gap-3">
+              <Badge className="bg-pink-100 text-pink-700 border-0 uppercase text-xs">Grade 10</Badge>
+              <div className="font-bold text-lg">Adaptive Practice {chapter?.title ? `— ${chapter.title}` : ""}</div>
+            </div>
+            <Button variant="outline" size="sm" onClick={()=>setPdfOpen(true)} data-testid="open-reference-btn">
+              <FileText size={14} className="mr-1"/> Reference
+            </Button>
           </div>
           <div className="text-sm text-slate-500 mt-1">Session • Question {progress.current}/{progress.total}</div>
           <div className="flex items-center gap-6 mt-4">
@@ -181,6 +197,31 @@ export default function AdaptiveQuiz() {
           Adaptive testing adjusts difficulty based on your performance. Speed counts!
         </Card>
       </div>
+
+      {/* Reference PDF drawer */}
+      <Sheet open={pdfOpen} onOpenChange={setPdfOpen}>
+        <SheetContent side="right" className="!max-w-none w-[min(720px,90vw)] sm:!max-w-none p-0 flex flex-col" data-testid="reference-drawer">
+          <SheetHeader className="p-4 border-b bg-slate-50">
+            <SheetTitle className="flex items-center gap-2"><BookOpen size={18}/> Reference · {chapter?.title || "Chapter"}</SheetTitle>
+          </SheetHeader>
+          <div className="flex-1 min-h-0">
+            {pdfUrl ? (
+              <iframe title="Chapter reference PDF" src={pdfUrl} className="w-full h-full" data-testid="reference-iframe" />
+            ) : (
+              <div className="p-6 space-y-3 overflow-y-auto h-full" data-testid="reference-topics">
+                <p className="text-sm text-slate-600">No source PDF for this curated chapter. Here's a quick refresher on the topics you'll be quizzed on:</p>
+                {(chapter?.extractedTopics || []).map((t, i) => (
+                  <div key={t.topicId} className="border rounded-lg p-3 bg-white">
+                    <div className="font-semibold text-slate-900">{i+1}. {t.title}</div>
+                    <p className="text-sm text-slate-600 mt-1 leading-relaxed">{t.contentChunk}</p>
+                  </div>
+                ))}
+                {!chapter && <div className="text-slate-400 text-sm">Loading chapter…</div>}
+              </div>
+            )}
+          </div>
+        </SheetContent>
+      </Sheet>
     </div>
   );
 }

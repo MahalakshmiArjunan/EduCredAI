@@ -305,7 +305,7 @@ async def start_assessment(chapterId: str, cu=Depends(get_current_user)):
     }
     await db.assessment_sessions.insert_one(doc)
     first_q = _pick_next_question(all_qs, 0.5, set())
-    return {"sessionId": session_id, "question": _sanitize_q(first_q), "progress": {"current": 1, "total": min(len(all_qs), 15)}}
+    return {"sessionId": session_id, "chapterId": chapterId, "chapterTitle": ch["title"], "question": _sanitize_q(first_q), "progress": {"current": 1, "total": min(len(all_qs), 15)}}
 
 
 def _sanitize_q(q):

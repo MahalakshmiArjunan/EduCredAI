@@ -4,7 +4,7 @@ import { useNavigate } from "react-router-dom";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { BookOpen, Play } from "lucide-react";
+import { BookOpen, Play, Eye } from "lucide-react";
 
 export default function MyCourses() {
   const [chapters, setChapters] = useState([]);
@@ -39,7 +39,8 @@ export default function MyCourses() {
               </div>
             </div>
             <div className="mt-4 flex gap-2">
-              <Button size="sm" onClick={()=>start(ch.id)} className="v-primary-gradient text-white flex-1" data-testid={`start-quiz-${ch.id}`}><Play size={14} className="mr-1"/> Adaptive Quiz</Button>
+              <Button size="sm" variant="outline" onClick={()=>nav(`/chapters/${ch.id}`)} className="flex-1" data-testid={`view-chapter-${ch.id}`}><Eye size={14} className="mr-1"/> Read</Button>
+              <Button size="sm" onClick={()=>start(ch.id)} className="v-primary-gradient text-white flex-1" data-testid={`start-quiz-${ch.id}`}><Play size={14} className="mr-1"/> Quiz</Button>
             </div>
           </Card>
         ))}
