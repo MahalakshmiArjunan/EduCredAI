@@ -5,6 +5,7 @@ import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
+import StreakBadges from "@/components/StreakBadges";
 import { Flame, Calendar, Sparkles, AlertCircle, Sun, Sigma, Info, ArrowRight } from "lucide-react";
 
 function subjectIcon(subject) {
@@ -154,6 +155,9 @@ export default function StudentDashboard() {
           </Card>
         </div>
       </div>
+
+      {/* Streak + Badges — full width */}
+      <StreakBadges />
     </div>
   );
 }

@@ -68,6 +68,20 @@ class FlagQuestionIn(BaseModel):
     reason: str
 
 
+class NoteIn(BaseModel):
+    chapterId: str
+    topicId: Optional[str] = None
+    text: str
+    color: Optional[str] = "yellow"  # yellow | blue | green | pink
+    kind: Optional[str] = "note"  # note | highlight
+    quotedText: Optional[str] = None  # for highlights
+
+
+class NoteUpdateIn(BaseModel):
+    text: Optional[str] = None
+    color: Optional[str] = None
+
+
 class AssignmentCreateIn(BaseModel):
     title: str
     subject: str
@@ -414,6 +428,45 @@ async def _update_mastery_from_session(student_id, subject, responses):
         {"$set": {"score": score, "level": level, "updatedAt": _now()}},
         upsert=True,
     )
+    # Update streak
+    await _update_streak(student_id)
+
+
+async def _update_streak(student_id: str):
+    """Increment streak if last active was yesterday; reset to 1 if gap > 1 day."""
+    from datetime import date, timedelta as td
+    user = await db.users.find_one({"id": student_id})
+    if not user:
+        return
+    profile = user.get("profile", {})
+    today = datetime.now(timezone.utc).date()
+    last_str = profile.get("lastActiveDate")
+    streak = profile.get("streak", 0)
+    longest = profile.get("longestStreak", 0)
+
+    if last_str:
+        try:
+            last = date.fromisoformat(last_str)
+        except Exception:
+            last = None
+    else:
+        last = None
+
+    if last == today:
+        return  # already updated today
+    if last == today - td(days=1):
+        streak += 1
+    else:
+        streak = 1
+    longest = max(longest, streak)
+    await db.users.update_one(
+        {"id": student_id},
+        {"$set": {
+            "profile.lastActiveDate": today.isoformat(),
+            "profile.streak": streak,
+            "profile.longestStreak": longest,
+        }},
+    )
 
 
 @api.get("/assessments/{session_id}")
@@ -571,6 +624,117 @@ async def assignment_submissions(aid: str, cu=Depends(get_current_user)):
         u = by_id.get(s["studentId"])
         s["studentName"] = u["name"] if u else "Unknown"
     return {"assignment": a, "submissions": subs}
+
+
+# ─────────────────────────── Notes / Highlights ───────────────────────────
+@api.get("/notes")
+async def list_notes(chapterId: str, topicId: Optional[str] = None, cu=Depends(get_current_user)):
+    q: Dict[str, Any] = {"userId": cu["id"], "chapterId": chapterId}
+    if topicId: q["topicId"] = topicId
+    notes = await db.notes.find(q, {"_id": 0}).sort("createdAt", -1).to_list(500)
+    return notes
+
+
+@api.post("/notes")
+async def create_note(payload: NoteIn, cu=Depends(get_current_user)):
+    if not payload.text.strip() and not payload.quotedText:
+        raise HTTPException(400, "Note text required")
+    doc = {
+        "id": str(uuid.uuid4()), "userId": cu["id"],
+        "chapterId": payload.chapterId, "topicId": payload.topicId,
+        "text": payload.text.strip(), "color": payload.color or "yellow",
+        "kind": payload.kind or "note", "quotedText": payload.quotedText,
+        "createdAt": _now(), "updatedAt": _now(),
+    }
+    await db.notes.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@api.put("/notes/{nid}")
+async def update_note(nid: str, payload: NoteUpdateIn, cu=Depends(get_current_user)):
+    updates = {"updatedAt": _now()}
+    if payload.text is not None: updates["text"] = payload.text.strip()
+    if payload.color: updates["color"] = payload.color
+    r = await db.notes.update_one({"id": nid, "userId": cu["id"]}, {"$set": updates})
+    if not r.matched_count:
+        raise HTTPException(404, "Note not found")
+    return {"ok": True}
+
+
+@api.delete("/notes/{nid}")
+async def delete_note(nid: str, cu=Depends(get_current_user)):
+    r = await db.notes.delete_one({"id": nid, "userId": cu["id"]})
+    if not r.deleted_count:
+        raise HTTPException(404, "Note not found")
+    return {"ok": True}
+
+
+# ─────────────────────────── Gamification (Streaks & Badges) ───────────────────────────
+BADGES = [
+    {"id": "first-step", "name": "First Step", "desc": "Completed your first quiz", "icon": "🎯"},
+    {"id": "on-fire-3", "name": "On Fire", "desc": "3-day streak", "icon": "🔥"},
+    {"id": "week-warrior", "name": "Week Warrior", "desc": "7-day streak", "icon": "⚔️"},
+    {"id": "fortnight-focus", "name": "Fortnight Focus", "desc": "14-day streak", "icon": "🎖️"},
+    {"id": "monthly-master", "name": "Monthly Master", "desc": "30-day streak", "icon": "👑"},
+    {"id": "curious-10", "name": "Curious Mind", "desc": "10 questions answered", "icon": "💡"},
+    {"id": "half-century", "name": "Half Century", "desc": "50 questions answered", "icon": "📚"},
+    {"id": "century-club", "name": "Century Club", "desc": "100 questions answered", "icon": "🏆"},
+    {"id": "perfect-score", "name": "Perfect Score", "desc": "Scored 100% on any quiz", "icon": "⭐"},
+    {"id": "topic-master", "name": "Topic Master", "desc": "Mastered 3+ topics", "icon": "🧠"},
+]
+
+
+@api.get("/gamification/me")
+async def gamification(cu=Depends(get_current_user)):
+    if cu["role"] != "STUDENT":
+        raise HTTPException(403, "Students only")
+    user = await db.users.find_one({"id": cu["id"]})
+    profile = user.get("profile", {})
+    streak = profile.get("streak", 0)
+    longest = profile.get("longestStreak", streak)
+
+    sessions = await db.assessment_sessions.find(
+        {"studentId": cu["id"]}, {"_id": 0}
+    ).to_list(500)
+    completed = [s for s in sessions if s.get("status") == "COMPLETED"]
+    total_qs = sum(len(s.get("responses", [])) for s in completed)
+    has_perfect = any(s.get("score", 0) == 100 for s in completed)
+
+    # Count mastered topics from topic-mastery computation
+    topic_correct: Dict[str, Dict[str, int]] = {}
+    for s in completed:
+        for r in s.get("responses", []):
+            tid = r.get("topicId")
+            if not tid: continue
+            a = topic_correct.setdefault(tid, {"c": 0, "n": 0})
+            a["n"] += 1
+            if r.get("isCorrect"): a["c"] += 1
+    mastered_topics = sum(1 for v in topic_correct.values() if v["n"] > 0 and v["c"] / v["n"] >= 0.8)
+
+    earned_ids = set()
+    if len(completed) >= 1: earned_ids.add("first-step")
+    if longest >= 3: earned_ids.add("on-fire-3")
+    if longest >= 7: earned_ids.add("week-warrior")
+    if longest >= 14: earned_ids.add("fortnight-focus")
+    if longest >= 30: earned_ids.add("monthly-master")
+    if total_qs >= 10: earned_ids.add("curious-10")
+    if total_qs >= 50: earned_ids.add("half-century")
+    if total_qs >= 100: earned_ids.add("century-club")
+    if has_perfect: earned_ids.add("perfect-score")
+    if mastered_topics >= 3: earned_ids.add("topic-master")
+
+    badges = []
+    for b in BADGES:
+        badges.append({**b, "earned": b["id"] in earned_ids})
+
+    return {
+        "streak": streak, "longestStreak": longest,
+        "totalSessions": len(completed), "totalQuestions": total_qs,
+        "masteredTopics": mastered_topics,
+        "badges": badges,
+        "earnedCount": len(earned_ids), "totalBadges": len(BADGES),
+    }
 
 
 # ─────────────────────────── Parent Digest & Topic Drilldown ───────────────────────────

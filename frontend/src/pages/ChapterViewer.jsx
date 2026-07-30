@@ -4,7 +4,9 @@ import { api, API } from "@/lib/api";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { FileText, ArrowLeft, Play, BookOpen, ExternalLink, Download } from "lucide-react";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import NotesPanel from "@/components/NotesPanel";
+import { FileText, ArrowLeft, Play, BookOpen, ExternalLink, Download, StickyNote } from "lucide-react";
 
 export default function ChapterViewer() {
   const { id } = useParams();
@@ -75,29 +77,39 @@ export default function ChapterViewer() {
           )}
         </Card>
 
-        {/* Topics panel */}
-        <Card className="v-card p-4 lg:col-span-2 overflow-y-auto max-h-[75vh]" data-testid="topics-panel">
-          <h3 className="font-bold text-lg mb-3 flex items-center gap-2"><BookOpen size={16}/> Topics</h3>
-          <div className="space-y-3">
-            {(chapter.extractedTopics || []).map((t, i) => {
-              const qs = byTopic(t.topicId);
-              return (
-                <div key={t.topicId} className="border border-slate-200 rounded-xl p-3 bg-slate-50/60" data-testid={`topic-${t.topicId}`}>
-                  <div className="flex items-start gap-2">
-                    <div className="w-7 h-7 rounded-full bg-[color:var(--v-primary)] text-white flex items-center justify-center font-bold text-xs shrink-0">{i+1}</div>
-                    <div className="flex-1 min-w-0">
-                      <div className="font-semibold text-slate-900">{t.title}</div>
-                      <p className="text-xs text-slate-600 mt-1 leading-relaxed">{t.contentChunk}</p>
-                      <div className="flex items-center gap-2 mt-2 flex-wrap">
-                        <Badge variant="outline" className="text-xs">{qs.length} questions</Badge>
-                        {t.weight && <Badge variant="outline" className="text-xs">Weight {Math.round(t.weight*100)}%</Badge>}
+        {/* Topics + Notes panel */}
+        <Card className="v-card p-0 lg:col-span-2 overflow-hidden max-h-[75vh] flex flex-col" data-testid="topics-panel">
+          <Tabs defaultValue="topics" className="flex flex-col h-full">
+            <TabsList className="mx-3 mt-3 grid grid-cols-2">
+              <TabsTrigger value="topics" data-testid="tab-topics"><BookOpen size={14} className="mr-1"/>Topics</TabsTrigger>
+              <TabsTrigger value="notes" data-testid="tab-notes"><StickyNote size={14} className="mr-1"/>My Notes</TabsTrigger>
+            </TabsList>
+            <TabsContent value="topics" className="flex-1 min-h-0 overflow-y-auto p-4 mt-0">
+              <div className="space-y-3">
+                {(chapter.extractedTopics || []).map((t, i) => {
+                  const qs = byTopic(t.topicId);
+                  return (
+                    <div key={t.topicId} className="border border-slate-200 rounded-xl p-3 bg-slate-50/60" data-testid={`topic-${t.topicId}`}>
+                      <div className="flex items-start gap-2">
+                        <div className="w-7 h-7 rounded-full bg-[color:var(--v-primary)] text-white flex items-center justify-center font-bold text-xs shrink-0">{i+1}</div>
+                        <div className="flex-1 min-w-0">
+                          <div className="font-semibold text-slate-900">{t.title}</div>
+                          <p className="text-xs text-slate-600 mt-1 leading-relaxed">{t.contentChunk}</p>
+                          <div className="flex items-center gap-2 mt-2 flex-wrap">
+                            <Badge variant="outline" className="text-xs">{qs.length} questions</Badge>
+                            {t.weight && <Badge variant="outline" className="text-xs">Weight {Math.round(t.weight*100)}%</Badge>}
+                          </div>
+                        </div>
                       </div>
                     </div>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
+                  );
+                })}
+              </div>
+            </TabsContent>
+            <TabsContent value="notes" className="flex-1 min-h-0 mt-0">
+              <NotesPanel chapterId={id} topics={chapter.extractedTopics || []} />
+            </TabsContent>
+          </Tabs>
         </Card>
       </div>
     </div>
