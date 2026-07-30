@@ -820,6 +820,82 @@ async def student_topic_mastery(student_id: str, subject: Optional[str] = None, 
 
 
 # ─────────────────────────── Notifications / Reminders ───────────────────────────
+@api.get("/leaderboard/weekly")
+async def weekly_leaderboard(cu=Depends(get_current_user)):
+    """Compute this week's points per student. Scope: user's class (or grade fallback)."""
+    from datetime import date, timedelta as td
+    today = date.today()
+    monday = today - td(days=today.weekday())
+    monday_iso = monday.isoformat()
+
+    # Find peer group: same class if set, else same grade
+    user = await db.users.find_one({"id": cu["id"]})
+    if not user:
+        raise HTTPException(404)
+
+    peer_query: Dict[str, Any] = {"role": "STUDENT"}
+    class_name = None
+    grade = None
+    if user["role"] == "STUDENT":
+        class_name = user.get("profile", {}).get("className")
+        grade = user.get("profile", {}).get("grade")
+    elif user["role"] == "TEACHER":
+        class_name = user.get("profile", {}).get("className")
+    elif user["role"] == "PARENT":
+        child_id = user.get("profile", {}).get("childId")
+        if child_id:
+            child = await db.users.find_one({"id": child_id})
+            if child:
+                class_name = child.get("profile", {}).get("className")
+                grade = child.get("profile", {}).get("grade")
+
+    if class_name:
+        peer_query["profile.className"] = class_name
+    elif grade:
+        peer_query["profile.grade"] = grade
+
+    peers = await db.users.find(peer_query, {"_id": 0}).to_list(500)
+    if not peers:
+        return {"scope": class_name or f"Grade {grade}" or "All", "weekOf": monday_iso, "leaderboard": []}
+    peer_ids = [p["id"] for p in peers]
+
+    # Fetch this week's completed sessions
+    sessions = await db.assessment_sessions.find(
+        {"studentId": {"$in": peer_ids}, "status": "COMPLETED"}, {"_id": 0}
+    ).to_list(2000)
+    week_sessions = [s for s in sessions if (s.get("completedAt") or "")[:10] >= monday_iso]
+
+    # Aggregate points
+    board: Dict[str, Dict[str, Any]] = {p["id"]: {"studentId": p["id"], "name": p["name"], "sessions": 0, "correct": 0, "questions": 0, "totalScore": 0.0, "streak": p.get("profile", {}).get("streak", 0)} for p in peers}
+    for s in week_sessions:
+        e = board.get(s["studentId"])
+        if not e: continue
+        e["sessions"] += 1
+        responses = s.get("responses", [])
+        e["questions"] += len(responses)
+        e["correct"] += sum(1 for r in responses if r.get("isCorrect"))
+        e["totalScore"] += float(s.get("score", 0))
+
+    for e in board.values():
+        # Points: 10/session + 2/correct + score bonus + streak bonus
+        avg_score = (e["totalScore"] / e["sessions"]) if e["sessions"] else 0
+        e["points"] = int(e["sessions"] * 10 + e["correct"] * 2 + avg_score / 5 + e["streak"])
+        e["avgScore"] = round(avg_score, 1)
+
+    ranked = sorted(board.values(), key=lambda x: (-x["points"], -x["correct"], x["name"]))
+    for i, e in enumerate(ranked):
+        e["rank"] = i + 1
+        e["isMe"] = e["studentId"] == cu["id"]
+
+    return {
+        "scope": class_name or (f"Grade {grade}" if grade else "All students"),
+        "weekOf": monday_iso,
+        "myRank": next((e["rank"] for e in ranked if e["isMe"]), None),
+        "leaderboard": ranked,
+    }
+
+
+# ─────────────────────────── Notifications / Reminders ───────────────────────────
 @api.get("/notifications/me")
 async def my_notifications(cu=Depends(get_current_user)):
     """Compute in-app reminders on the fly for the current user."""

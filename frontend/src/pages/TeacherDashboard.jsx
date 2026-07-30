@@ -4,6 +4,7 @@ import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { AlertTriangle, Users, ArrowRight, Calendar } from "lucide-react";
+import Leaderboard from "@/components/Leaderboard";
 
 const STATUS_COLOR = {
   MASTERY: "bg-emerald-600",
@@ -124,6 +125,9 @@ export default function TeacherDashboard() {
           </div>
         </Card>
       </div>
+
+      {/* Class leaderboard for the teacher */}
+      <Leaderboard limit={10} />
     </div>
   );
 }

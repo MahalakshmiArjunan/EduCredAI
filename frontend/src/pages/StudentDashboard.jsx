@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import StreakBadges from "@/components/StreakBadges";
+import Leaderboard from "@/components/Leaderboard";
 import { Flame, Calendar, Sparkles, AlertCircle, Sun, Sigma, Info, ArrowRight } from "lucide-react";
 
 function subjectIcon(subject) {
