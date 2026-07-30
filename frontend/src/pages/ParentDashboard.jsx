@@ -1,21 +1,72 @@
 import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { Card } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
-import { AlertTriangle, TrendingUp, CheckCircle2, ChevronRight } from "lucide-react";
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { AlertTriangle, TrendingUp, CheckCircle2, ChevronRight, Mail, ChevronDown, Zap, Clock } from "lucide-react";
 import { Radar, RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, ResponsiveContainer, Legend } from "recharts";
+import { toast } from "sonner";
+
+const STATUS_COLOR = {
+  MASTERED: "bg-emerald-500",
+  DEVELOPING: "bg-amber-500",
+  CRITICAL: "bg-red-500",
+  PENDING: "bg-slate-300",
+};
+const STATUS_LABEL = {
+  MASTERED: "text-emerald-700 bg-emerald-100",
+  DEVELOPING: "text-amber-800 bg-amber-100",
+  CRITICAL: "text-red-700 bg-red-100",
+  PENDING: "text-slate-600 bg-slate-100",
+};
 
 export default function ParentDashboard() {
   const [d, setD] = useState(null);
+  const [drillSubject, setDrillSubject] = useState(null);
+  const [drillData, setDrillData] = useState(null);
+  const [sending, setSending] = useState(false);
+
   useEffect(() => { api.get("/dashboard/parent").then(r => setD(r.data)); }, []);
+
+  const openDrill = async (subject) => {
+    if (!d?.child?.id) return;
+    setDrillSubject(subject);
+    setDrillData(null);
+    try {
+      const r = await api.get(`/students/${d.child.id}/topic-mastery`, { params: { subject } });
+      setDrillData(r.data);
+    } catch (e) {
+      toast.error("Could not load topics");
+    }
+  };
+
+  const sendDigest = async () => {
+    setSending(true);
+    try {
+      const r = await api.post("/parent/send-digest");
+      toast.success(`Digest sent to ${r.data.to}!`);
+    } catch (e) {
+      const msg = e.response?.data?.detail || "Send failed";
+      if (msg.includes("RESEND_API_KEY")) {
+        toast.error("Email not configured. Add RESEND_API_KEY to backend .env");
+      } else toast.error(msg);
+    } finally { setSending(false); }
+  };
+
   if (!d) return <div>Loading…</div>;
 
   return (
     <div className="max-w-[1400px] mx-auto space-y-6" data-testid="parent-dashboard">
-      <div>
-        <h1 className="text-3xl font-bold">Parent Portal</h1>
-        <p className="text-slate-500 mt-1">{d.user.name} / {d.child.name}</p>
+      <div className="flex flex-col md:flex-row md:items-end md:justify-between gap-3">
+        <div>
+          <h1 className="text-3xl font-bold">Parent Portal</h1>
+          <p className="text-slate-500 mt-1">{d.user.name} / {d.child.name}</p>
+        </div>
+        <Button onClick={sendDigest} disabled={sending} className="v-primary-gradient text-white" data-testid="send-digest-btn">
+          <Mail size={14} className="mr-2"/> {sending ? "Sending…" : "Email me the weekly digest"}
+        </Button>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -55,18 +106,33 @@ export default function ParentDashboard() {
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <Card className="v-card p-6 lg:col-span-2" data-testid="radar-card">
-          <h3 className="text-xl font-bold mb-4">Strengths vs. Weaknesses</h3>
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-xl font-bold">Strengths vs. Weaknesses</h3>
+            <span className="text-xs text-slate-500">Click a subject to drill down</span>
+          </div>
           <div className="h-[340px]">
             <ResponsiveContainer width="100%" height="100%">
               <RadarChart data={d.radar}>
                 <PolarGrid stroke="#cbd5e1" />
-                <PolarAngleAxis dataKey="subject" tick={{fill:"#334155", fontSize:12, fontWeight:600}} />
+                <PolarAngleAxis dataKey="subject" tick={(props) => (
+                  <RadarLabel {...props} onClick={openDrill} />
+                )} />
                 <PolarRadiusAxis angle={90} domain={[0,100]} tick={{fill:"#94a3b8", fontSize:10}} />
                 <Radar name={d.child.name.split(" ")[0]} dataKey="aarav" stroke="#2563eb" fill="#2563eb" fillOpacity={0.4} />
                 <Radar name="Class Avg" dataKey="classAvg" stroke="#94a3b8" fill="#cbd5e1" fillOpacity={0.2} strokeDasharray="4 4" />
                 <Legend />
               </RadarChart>
             </ResponsiveContainer>
+          </div>
+          {/* Subject chips for quick drilldown */}
+          <div className="flex flex-wrap gap-2 mt-4" data-testid="subject-chips">
+            {d.radar.map(s => (
+              <button key={s.subject} onClick={()=>openDrill(s.subject === "Math" ? "Mathematics" : s.subject)}
+                className="flex items-center gap-2 bg-blue-50 hover:bg-blue-100 border border-blue-100 rounded-full px-3 py-1.5 text-sm font-medium text-[color:var(--v-primary-deep)] transition"
+                data-testid={`drill-${s.subject}`}>
+                {s.subject} · {s.aarav}% <ChevronRight size={14}/>
+              </button>
+            ))}
           </div>
         </Card>
 
@@ -122,6 +188,76 @@ export default function ParentDashboard() {
           </Card>
         ))}
       </div>
+
+      {/* Topic Drilldown Drawer */}
+      <Sheet open={!!drillSubject} onOpenChange={(o)=>{ if (!o) { setDrillSubject(null); setDrillData(null); } }}>
+        <SheetContent side="right" className="!max-w-none w-[min(640px,92vw)] sm:!max-w-none p-0 flex flex-col" data-testid="drill-drawer">
+          <SheetHeader className="p-5 border-b bg-slate-50">
+            <SheetTitle className="flex items-center gap-2">
+              <Zap size={18} className="text-[color:var(--v-primary)]"/>
+              {drillSubject} · Topic Mastery
+            </SheetTitle>
+            {drillData && (
+              <p className="text-xs text-slate-500 mt-1">
+                {drillData.attemptedTopics} of {drillData.totalTopics} topics attempted
+              </p>
+            )}
+          </SheetHeader>
+          <div className="flex-1 min-h-0 overflow-y-auto p-5 space-y-3">
+            {!drillData ? (
+              <div className="text-slate-400 text-sm text-center py-8">Loading topic mastery…</div>
+            ) : drillData.topics.length === 0 ? (
+              <div className="text-slate-400 text-sm text-center py-8">No topics available for {drillSubject} yet.</div>
+            ) : (
+              drillData.topics.map((t) => (
+                <div key={t.topicId} className="border border-slate-200 rounded-xl p-4 bg-white" data-testid={`drill-topic-${t.topicId}`}>
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="flex-1">
+                      <div className="font-semibold text-slate-900">{t.title}</div>
+                      <div className="text-xs text-slate-500 mt-0.5">{t.chapter}</div>
+                    </div>
+                    <Badge className={`${STATUS_LABEL[t.status]} border-0 uppercase text-xs`}>{t.status}</Badge>
+                  </div>
+                  <div className="mt-3">
+                    <div className="flex justify-between items-baseline mb-1">
+                      <span className="text-xs font-semibold text-slate-600">Mastery</span>
+                      <span className="text-lg font-bold text-[color:var(--v-primary-deep)]">{t.mastery}%</span>
+                    </div>
+                    <div className="h-2 bg-slate-100 rounded overflow-hidden">
+                      <div className={`h-full ${STATUS_COLOR[t.status]}`} style={{width: `${t.mastery}%`}}/>
+                    </div>
+                  </div>
+                  <div className="mt-3 flex items-center gap-4 text-xs text-slate-500">
+                    <span>{t.attempts} attempts</span>
+                    <span>·</span>
+                    <span>{t.correct} correct</span>
+                    {t.avgTimeSec > 0 && (
+                      <>
+                        <span>·</span>
+                        <span className="flex items-center gap-1"><Clock size={11}/> avg {t.avgTimeSec}s / q</span>
+                      </>
+                    )}
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </SheetContent>
+      </Sheet>
     </div>
+  );
+}
+
+/** Custom clickable radar tick label */
+function RadarLabel({ x, y, payload, onClick, textAnchor }) {
+  const subject = payload.value;
+  return (
+    <text x={x} y={y} textAnchor={textAnchor} dy={4}
+      className="cursor-pointer"
+      style={{fill:"#334155", fontSize:12, fontWeight:600}}
+      onClick={() => onClick(subject === "Math" ? "Mathematics" : subject)}
+    >
+      {subject}
+    </text>
   );
 }

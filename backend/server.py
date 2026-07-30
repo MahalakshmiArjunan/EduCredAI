@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 
 from auth import hash_password, verify_password, create_token, get_current_user
 from ai_service import extract_chapter_from_pdf, generate_questions_for_topic
+from email_service import send_parent_digest, send_all_parent_digests
 from seed import seed_all
 
 ROOT_DIR = Path(__file__).parent
@@ -572,6 +573,88 @@ async def assignment_submissions(aid: str, cu=Depends(get_current_user)):
     return {"assignment": a, "submissions": subs}
 
 
+# ─────────────────────────── Parent Digest & Topic Drilldown ───────────────────────────
+@api.post("/parent/send-digest")
+async def send_digest_now(cu=Depends(get_current_user)):
+    if cu["role"] not in ("PARENT", "ADMIN"):
+        raise HTTPException(403, "Parents only")
+    result = await send_parent_digest(db, cu["id"])
+    if result.get("status") == "error":
+        raise HTTPException(500, result.get("error", "Send failed"))
+    if result.get("status") == "skipped":
+        raise HTTPException(400, result.get("reason", "Unable to send"))
+    return result
+
+
+@api.get("/parent/digest-history")
+async def digest_history(cu=Depends(get_current_user)):
+    if cu["role"] != "PARENT":
+        raise HTTPException(403)
+    logs = await db.digest_logs.find({"parentId": cu["id"]}, {"_id": 0}).sort("sentAt", -1).to_list(20)
+    return logs
+
+
+@api.get("/students/{student_id}/topic-mastery")
+async def student_topic_mastery(student_id: str, subject: Optional[str] = None, cu=Depends(get_current_user)):
+    """Per-topic mastery drilldown: aggregates responses from assessment_sessions by topicId."""
+    if cu["role"] not in ("STUDENT", "PARENT", "TEACHER", "ADMIN"):
+        raise HTTPException(403)
+    # Fetch all completed session responses
+    sessions = await db.assessment_sessions.find(
+        {"studentId": student_id}, {"_id": 0}
+    ).to_list(500)
+    # Fetch chapters (for topic titles + weights)
+    ch_query: Dict[str, Any] = {}
+    if subject: ch_query["subject"] = subject
+    chapters = await db.chapters.find(ch_query, {"_id": 0}).to_list(200)
+
+    # Build topic dictionary: topicId -> {title, subject, chapter}
+    topic_meta: Dict[str, Dict[str, Any]] = {}
+    for ch in chapters:
+        for t in ch.get("extractedTopics", []):
+            topic_meta[t["topicId"]] = {
+                "topicId": t["topicId"], "title": t["title"],
+                "subject": ch["subject"], "chapter": ch["title"],
+                "chapterId": ch["id"], "weight": t.get("weight", 0.25),
+            }
+
+    # Aggregate by topic
+    agg: Dict[str, Dict[str, Any]] = {}
+    for s in sessions:
+        if subject and s.get("subject") != subject:
+            continue
+        for r in s.get("responses", []):
+            tid = r.get("topicId")
+            if not tid:
+                continue
+            a = agg.setdefault(tid, {"attempts": 0, "correct": 0, "totalTime": 0})
+            a["attempts"] += 1
+            if r.get("isCorrect"):
+                a["correct"] += 1
+            a["totalTime"] += r.get("timeTakenSeconds", 0)
+
+    # Combine
+    out = []
+    for tid, meta in topic_meta.items():
+        stats = agg.get(tid, {"attempts": 0, "correct": 0, "totalTime": 0})
+        mastery_pct = round((stats["correct"] / stats["attempts"]) * 100, 1) if stats["attempts"] else 0
+        status = "PENDING"
+        if stats["attempts"] > 0:
+            status = "MASTERED" if mastery_pct >= 80 else "DEVELOPING" if mastery_pct >= 50 else "CRITICAL"
+        out.append({
+            **meta,
+            "attempts": stats["attempts"],
+            "correct": stats["correct"],
+            "mastery": mastery_pct,
+            "avgTimeSec": round(stats["totalTime"] / stats["attempts"], 1) if stats["attempts"] else 0,
+            "status": status,
+        })
+
+    # Sort: pending last, then by mastery ascending (weak first)
+    out.sort(key=lambda x: (x["status"] == "PENDING", x["mastery"]))
+    return {"topics": out, "totalTopics": len(out), "attemptedTopics": sum(1 for t in out if t["attempts"] > 0)}
+
+
 # ─────────────────────────── Notifications / Reminders ───────────────────────────
 @api.get("/notifications/me")
 async def my_notifications(cu=Depends(get_current_user)):
@@ -907,8 +990,33 @@ async def _seed():
         await seed_all(db)
     except Exception as e:
         logger.warning(f"Seed skipped: {e}")
+    # Weekly parent digest scheduler (Mon 08:00 UTC)
+    try:
+        from apscheduler.schedulers.asyncio import AsyncIOScheduler
+        from apscheduler.triggers.cron import CronTrigger
+        scheduler = AsyncIOScheduler(timezone="UTC")
+
+        async def _weekly_job():
+            try:
+                if not os.environ.get("RESEND_API_KEY"):
+                    logger.info("[digest] Skipping weekly run — RESEND_API_KEY not set")
+                    return
+                await send_all_parent_digests(db)
+            except Exception as e:
+                logger.exception(f"weekly digest failed: {e}")
+
+        scheduler.add_job(_weekly_job, CronTrigger(day_of_week="mon", hour=8, minute=0))
+        scheduler.start()
+        app.state.scheduler = scheduler
+        logger.info("Weekly parent digest scheduler started (Mon 08:00 UTC)")
+    except Exception as e:
+        logger.warning(f"Scheduler init failed: {e}")
 
 
 @app.on_event("shutdown")
 async def _shutdown():
+    try:
+        sch = getattr(app.state, "scheduler", None)
+        if sch: sch.shutdown(wait=False)
+    except Exception: pass
     client.close()
