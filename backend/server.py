@@ -67,6 +67,20 @@ class FlagQuestionIn(BaseModel):
     reason: str
 
 
+class AssignmentCreateIn(BaseModel):
+    title: str
+    subject: str
+    chapterId: Optional[str] = None
+    questionIds: List[str]
+    studentIds: List[str]
+    dueDate: str  # ISO date
+    instructions: Optional[str] = ""
+
+
+class AssignmentSubmitIn(BaseModel):
+    responses: List[Dict[str, Any]]  # [{questionId, userResponse}]
+
+
 # ─────────────────────────── Auth ───────────────────────────
 @api.post("/auth/signup")
 async def signup(payload: SignupIn):
@@ -411,6 +425,151 @@ async def get_session(session_id: str, cu=Depends(get_current_user)):
 @api.get("/assessments/history/me")
 async def my_assessments(cu=Depends(get_current_user)):
     return await db.assessment_sessions.find({"studentId": cu["id"]}, {"_id": 0}).sort("startedAt", -1).to_list(50)
+
+
+# ─────────────────────────── Assignments (Custom Quiz Builder) ───────────────────────────
+@api.post("/assignments")
+async def create_assignment(payload: AssignmentCreateIn, cu=Depends(get_current_user)):
+    if cu["role"] != "TEACHER":
+        raise HTTPException(403, "Teachers only")
+    if not payload.questionIds:
+        raise HTTPException(400, "Pick at least one question")
+    if not payload.studentIds:
+        raise HTTPException(400, "Assign to at least one student")
+    aid = str(uuid.uuid4())
+    doc = {
+        "id": aid,
+        "title": payload.title,
+        "subject": payload.subject,
+        "chapterId": payload.chapterId,
+        "questionIds": payload.questionIds,
+        "studentIds": payload.studentIds,
+        "dueDate": payload.dueDate,
+        "instructions": payload.instructions,
+        "createdBy": cu["id"],
+        "createdAt": _now(),
+    }
+    await db.assignments.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@api.get("/assignments/teacher")
+async def teacher_assignments(cu=Depends(get_current_user)):
+    if cu["role"] != "TEACHER":
+        raise HTTPException(403)
+    items = await db.assignments.find({"createdBy": cu["id"]}, {"_id": 0}).sort("createdAt", -1).to_list(200)
+    # Attach submission counts
+    for a in items:
+        subs = await db.assignment_submissions.count_documents({"assignmentId": a["id"], "status": "COMPLETED"})
+        a["submittedCount"] = subs
+        a["totalStudents"] = len(a.get("studentIds", []))
+    return items
+
+
+@api.get("/assignments/student")
+async def student_assignments(cu=Depends(get_current_user)):
+    if cu["role"] != "STUDENT":
+        raise HTTPException(403)
+    items = await db.assignments.find({"studentIds": cu["id"]}, {"_id": 0}).sort("dueDate", 1).to_list(200)
+    # Attach my submission status
+    for a in items:
+        sub = await db.assignment_submissions.find_one(
+            {"assignmentId": a["id"], "studentId": cu["id"]}, {"_id": 0}
+        )
+        a["mySubmission"] = sub
+    return items
+
+
+@api.get("/assignments/{aid}")
+async def get_assignment(aid: str, cu=Depends(get_current_user)):
+    a = await db.assignments.find_one({"id": aid}, {"_id": 0})
+    if not a:
+        raise HTTPException(404, "Not found")
+    # Access control
+    if cu["role"] == "STUDENT" and cu["id"] not in a["studentIds"]:
+        raise HTTPException(403, "Not assigned to you")
+    if cu["role"] == "TEACHER" and a["createdBy"] != cu["id"]:
+        raise HTTPException(403, "Not your assignment")
+    questions = await db.questions.find({"id": {"$in": a["questionIds"]}}, {"_id": 0}).to_list(500)
+    # For students who haven't submitted, sanitize
+    my_sub = None
+    if cu["role"] == "STUDENT":
+        my_sub = await db.assignment_submissions.find_one(
+            {"assignmentId": aid, "studentId": cu["id"]}, {"_id": 0}
+        )
+        if not my_sub or my_sub.get("status") != "COMPLETED":
+            questions = [_sanitize_q(q) for q in questions]
+    a["questions"] = questions
+    a["mySubmission"] = my_sub
+    return a
+
+
+@api.post("/assignments/{aid}/submit")
+async def submit_assignment(aid: str, payload: AssignmentSubmitIn, cu=Depends(get_current_user)):
+    if cu["role"] != "STUDENT":
+        raise HTTPException(403)
+    a = await db.assignments.find_one({"id": aid}, {"_id": 0})
+    if not a: raise HTTPException(404, "Not found")
+    if cu["id"] not in a["studentIds"]:
+        raise HTTPException(403, "Not assigned")
+
+    # Grade
+    graded = []
+    correct_count = 0
+    for r in payload.responses:
+        q = await db.questions.find_one({"id": r["questionId"]}, {"_id": 0})
+        if not q:
+            continue
+        is_correct = False
+        if q["type"] == "MCQ":
+            try:
+                is_correct = int(r.get("userResponse")) == int(q["correctOptionId"])
+            except Exception:
+                is_correct = False
+        else:
+            is_correct = bool(r.get("userResponse"))
+        if is_correct:
+            correct_count += 1
+        graded.append({
+            "questionId": q["id"], "userResponse": r.get("userResponse"),
+            "isCorrect": is_correct, "type": q["type"],
+        })
+
+    total = len(graded) or 1
+    score = round((correct_count / total) * 100, 1)
+    sub_id = str(uuid.uuid4())
+    doc = {
+        "id": sub_id, "assignmentId": aid, "studentId": cu["id"],
+        "responses": graded, "score": score,
+        "status": "COMPLETED", "submittedAt": _now(),
+    }
+    # Upsert (allow one submission per student per assignment)
+    await db.assignment_submissions.update_one(
+        {"assignmentId": aid, "studentId": cu["id"]},
+        {"$set": doc},
+        upsert=True,
+    )
+    return {"score": score, "correct": correct_count, "total": total, "submissionId": sub_id}
+
+
+@api.get("/assignments/{aid}/submissions")
+async def assignment_submissions(aid: str, cu=Depends(get_current_user)):
+    a = await db.assignments.find_one({"id": aid}, {"_id": 0})
+    if not a: raise HTTPException(404)
+    if cu["role"] == "TEACHER" and a["createdBy"] != cu["id"]:
+        raise HTTPException(403)
+    if cu["role"] not in ("TEACHER", "ADMIN"):
+        raise HTTPException(403)
+    subs = await db.assignment_submissions.find({"assignmentId": aid}, {"_id": 0}).to_list(500)
+    # Attach student names
+    student_ids = list({s["studentId"] for s in subs})
+    students = await db.users.find({"id": {"$in": student_ids}}, {"_id": 0}).to_list(500)
+    by_id = {s["id"]: s for s in students}
+    for s in subs:
+        u = by_id.get(s["studentId"])
+        s["studentName"] = u["name"] if u else "Unknown"
+    return {"assignment": a, "submissions": subs}
 
 
 # ─────────────────────────── Study Plan ───────────────────────────

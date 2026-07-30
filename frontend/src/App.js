@@ -15,6 +15,11 @@ import StudyPlan from "@/pages/StudyPlan";
 import PracticeZone from "@/pages/PracticeZone";
 import AdminReview from "@/pages/AdminReview";
 import Results from "@/pages/Results";
+import TeacherAssignments from "@/pages/TeacherAssignments";
+import AssignmentCreate from "@/pages/AssignmentCreate";
+import AssignmentDetail from "@/pages/AssignmentDetail";
+import StudentAssignments from "@/pages/StudentAssignments";
+import TakeAssignment from "@/pages/TakeAssignment";
 
 function Home() {
   const { user } = useAuth();
@@ -48,8 +53,12 @@ export default function App() {
           <Route path="/upload" element={<Protected><UploadChapter /></Protected>} />
           <Route path="/quiz/:sessionId" element={<Protected><AdaptiveQuiz /></Protected>} />
           <Route path="/admin/flagged" element={<Protected><AdminReview /></Protected>} />
+          <Route path="/assignments" element={<Protected><TeacherAssignments /></Protected>} />
+          <Route path="/assignments/new" element={<Protected><AssignmentCreate /></Protected>} />
+          <Route path="/assignments/:id" element={<Protected><AssignmentDetail /></Protected>} />
+          <Route path="/assignments/:id/take" element={<Protected><TakeAssignment /></Protected>} />
+          <Route path="/my-assignments" element={<Protected><StudentAssignments /></Protected>} />
           <Route path="/students" element={<Protected><TeacherDashboard /></Protected>} />
-          <Route path="/assignments" element={<Protected><TeacherDashboard /></Protected>} />
           <Route path="/question-bank" element={<Protected><TeacherDashboard /></Protected>} />
           <Route path="/activity" element={<Protected><ParentDashboard /></Protected>} />
           <Route path="/insights" element={<Protected><ParentDashboard /></Protected>} />

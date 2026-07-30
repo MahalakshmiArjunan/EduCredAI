@@ -8,6 +8,7 @@ const NAVS = {
     { to: "/", icon: Home, label: "Dashboard" },
     { to: "/courses", icon: BookOpen, label: "My Courses" },
     { to: "/practice", icon: Pencil, label: "Practice Zone" },
+    { to: "/my-assignments", icon: ClipboardList, label: "Assignments" },
     { to: "/plan", icon: Calendar, label: "Study Plan" },
     { to: "/results", icon: BarChart3, label: "Results" },
     { to: "/upload", icon: Upload, label: "Upload Chapter" },
@@ -15,9 +16,8 @@ const NAVS = {
   TEACHER: [
     { to: "/", icon: Home, label: "Class Overview" },
     { to: "/assignments", icon: ClipboardList, label: "Assignments" },
-    { to: "/students", icon: Users, label: "Student Reports" },
+    { to: "/assignments/new", icon: Pencil, label: "New Assignment" },
     { to: "/upload", icon: Upload, label: "Upload Chapter" },
-    { to: "/question-bank", icon: FileText, label: "Question Bank" },
   ],
   PARENT: [
     { to: "/", icon: Home, label: "Dashboard" },
@@ -71,7 +71,7 @@ export default function Layout({ children }) {
         )}
         {user.role === "TEACHER" && (
           <Button data-testid="create-quiz-btn" className="v-primary-gradient text-white mt-4 h-11 rounded-lg"
-            onClick={() => nav("/upload")}>+ Create Chapter</Button>
+            onClick={() => nav("/assignments/new")}>+ New Assignment</Button>
         )}
         <div className="mt-4 space-y-1 border-t border-[color:var(--v-outline-variant)] pt-4">
           <button className="flex items-center gap-3 px-3 py-2 rounded-lg text-sm text-[color:var(--v-on-surface-variant)] hover:bg-white/50 w-full">
