@@ -11,7 +11,8 @@ const DEMO = [
   { role: "STUDENT · G10", email: "student@vidya.in", password: "student123" },
   { role: "STUDENT · G8", email: "student8@vidya.in", password: "student123" },
   { role: "TEACHER", email: "teacher@vidya.in", password: "teacher123" },
-  { role: "PARENT", email: "parent@vidya.in", password: "parent123" },
+  { role: "PARENT · G10", email: "parent@vidya.in", password: "parent123" },
+  { role: "PARENT · G8", email: "parent8@vidya.in", password: "parent123" },
   { role: "ADMIN", email: "admin@vidya.in", password: "admin123" },
 ];
 

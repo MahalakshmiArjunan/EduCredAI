@@ -960,6 +960,91 @@ async def my_notifications(cu=Depends(get_current_user)):
 
 
 # ─────────────────────────── Study Plan ───────────────────────────
+@api.post("/study-plan/generate")
+async def generate_study_plan(days: int = 7, minutes_per_day: int = 45, cu=Depends(get_current_user)):
+    """Rule-based AI plan: priority = weight × (1 − mastery). Spreads top weak topics across N days."""
+    if cu["role"] != "STUDENT":
+        raise HTTPException(403, "Students only")
+    user = await db.users.find_one({"id": cu["id"]})
+    grade = user.get("profile", {}).get("grade", 10)
+
+    # Compute per-topic mastery for this student
+    sessions = await db.assessment_sessions.find({"studentId": cu["id"]}, {"_id": 0}).to_list(500)
+    topic_stats: Dict[str, Dict[str, int]] = {}
+    for s in sessions:
+        for r in s.get("responses", []):
+            tid = r.get("topicId")
+            if not tid: continue
+            a = topic_stats.setdefault(tid, {"c": 0, "n": 0})
+            a["n"] += 1
+            if r.get("isCorrect"): a["c"] += 1
+
+    # Gather all topics for this grade with priority score
+    chapters = await db.chapters.find({"grade": grade}, {"_id": 0}).to_list(200)
+    candidates = []
+    for ch in chapters:
+        for t in ch.get("extractedTopics", []):
+            tid = t["topicId"]
+            stats = topic_stats.get(tid, {"c": 0, "n": 0})
+            mastery = (stats["c"] / stats["n"]) if stats["n"] else 0.0
+            weight = float(t.get("weight", 0.25))
+            priority = weight * (1 - mastery)
+            # Bonus for unattempted topics
+            if stats["n"] == 0:
+                priority += 0.15
+            candidates.append({
+                "topicId": tid, "topicTitle": t["title"],
+                "chapterId": ch["id"], "chapterTitle": ch["title"],
+                "subject": ch["subject"], "mastery": round(mastery * 100, 1),
+                "attempts": stats["n"], "priority": round(priority, 3),
+            })
+
+    if not candidates:
+        raise HTTPException(400, "No chapters found for your grade. Ask your teacher to upload some.")
+
+    # Sort by priority descending
+    candidates.sort(key=lambda x: -x["priority"])
+    # Pick top items — enough to fill roughly 2-3 tasks per day
+    tasks_per_day = max(1, minutes_per_day // 20)
+    n_pick = min(len(candidates), days * tasks_per_day)
+    picks = candidates[:n_pick]
+
+    # Delete existing AUTO tasks (keep manual ones intact)
+    await db.study_plans.delete_many({"studentId": cu["id"], "source": "AUTO"})
+
+    # Round-robin picks across days
+    from datetime import timedelta as td, date as _date
+    today = _date.today()
+    new_tasks = []
+    for i, p in enumerate(picks):
+        day = i % days
+        # Alternate revision + practice
+        kind = "practice" if (i // days) % 2 else "revision"
+        duration = 20 if kind == "revision" else 25
+        title = f"{'Practice' if kind == 'practice' else 'Review'}: {p['topicTitle']}"
+        task = {
+            "id": str(uuid.uuid4()), "studentId": cu["id"],
+            "title": title, "subject": p["subject"],
+            "durationMin": duration, "topicId": p["topicId"],
+            "chapterId": p["chapterId"],
+            "date": (today + td(days=day)).isoformat(),
+            "status": "UPCOMING", "kind": kind,
+            "source": "AUTO", "priority": p["priority"],
+            "reason": f"Mastery {p['mastery']}% • Weight {int(candidates[picks.index(p)]['priority']*100)}%",
+            "createdAt": _now(),
+        }
+        new_tasks.append(task)
+
+    if new_tasks:
+        await db.study_plans.insert_many(new_tasks)
+
+    return {
+        "generated": len(new_tasks), "days": days,
+        "topFocusAreas": [{"title": p["topicTitle"], "subject": p["subject"], "mastery": p["mastery"]} for p in picks[:5]],
+        "generatedAt": _now(),
+    }
+
+
 @api.get("/study-plan/me")
 async def my_plan(cu=Depends(get_current_user)):
     tasks = await db.study_plans.find({"studentId": cu["id"]}, {"_id": 0}).sort("date", 1).to_list(200)
