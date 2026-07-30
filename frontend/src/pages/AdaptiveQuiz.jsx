@@ -89,7 +89,7 @@ export default function AdaptiveQuiz() {
         } else if (newRank && !preRank) {
           toast.success(`🎊 You just joined the leaderboard at #${newRank}!`, { duration: 6000 });
         }
-      } catch { /* ignore rank check errors */ }
+      } catch (err) { console.error("Rank-up check failed:", err); }
       setTimeout(() => nav("/"), 1200);
       return;
     }

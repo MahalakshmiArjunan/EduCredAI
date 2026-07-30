@@ -31,7 +31,7 @@ export default function NotesPanel({ chapterId, topics = [], defaultTopicId = nu
       if (topicFilter !== "all") params.topicId = topicFilter;
       const r = await api.get("/notes", { params });
       setNotes(r.data);
-    } catch { /* ignore */ }
+    } catch (err) { console.error("Failed to load notes:", err); }
     finally { setLoading(false); }
   };
   useEffect(() => { load(); }, [chapterId, topicFilter]); // eslint-disable-line
