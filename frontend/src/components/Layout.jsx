@@ -2,6 +2,7 @@ import { Link, NavLink, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "@/lib/auth";
 import { Bell, Home, BookOpen, Pencil, Calendar, BarChart3, HelpCircle, Settings, Upload, Users, ClipboardList, FileText, ShieldCheck, LogOut, TrendingUp, Activity } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import NotificationsBell from "@/components/NotificationsBell";
 
 const NAVS = {
   STUDENT: [
@@ -92,10 +93,7 @@ export default function Layout({ children }) {
               {location.pathname === "/" ? "Classroom" : location.pathname.slice(1).replace(/-/g," ").replace(/\b\w/g, c=>c.toUpperCase())}
             </div>
             <div className="flex items-center gap-4">
-              <button className="relative p-2 rounded-full hover:bg-slate-100" data-testid="notifications-btn">
-                <Bell size={18} className="text-[color:var(--v-on-surface-variant)]" />
-                <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-red-500 rounded-full" />
-              </button>
+              <NotificationsBell />
               <div className="flex items-center gap-2 pl-3 border-l border-slate-200">
                 <div className="w-9 h-9 rounded-full bg-gradient-to-br from-blue-500 to-indigo-600 text-white flex items-center justify-center font-semibold text-sm">
                   {user.name?.charAt(0)}

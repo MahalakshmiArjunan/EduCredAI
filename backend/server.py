@@ -572,6 +572,146 @@ async def assignment_submissions(aid: str, cu=Depends(get_current_user)):
     return {"assignment": a, "submissions": subs}
 
 
+# ─────────────────────────── Notifications / Reminders ───────────────────────────
+@api.get("/notifications/me")
+async def my_notifications(cu=Depends(get_current_user)):
+    """Compute in-app reminders on the fly for the current user."""
+    from datetime import date, timedelta as td
+    today = datetime.now(timezone.utc).date()
+    reminders: List[Dict[str, Any]] = []
+
+    if cu["role"] == "STUDENT":
+        # Assignments assigned to me
+        assignments = await db.assignments.find({"studentIds": cu["id"]}, {"_id": 0}).to_list(200)
+        for a in assignments:
+            sub = await db.assignment_submissions.find_one(
+                {"assignmentId": a["id"], "studentId": cu["id"]}, {"_id": 0}
+            )
+            if sub and sub.get("status") == "COMPLETED":
+                continue
+            try:
+                due = date.fromisoformat(a["dueDate"])
+            except Exception:
+                continue
+            days_left = (due - today).days
+            severity = "info"
+            message = ""
+            if days_left < 0:
+                severity = "danger"
+                message = f"Overdue by {abs(days_left)} day{'s' if abs(days_left)!=1 else ''}"
+            elif days_left == 0:
+                severity = "danger"
+                message = "Due today"
+            elif days_left == 1:
+                severity = "warning"
+                message = "Due tomorrow"
+            elif days_left <= 3:
+                severity = "info"
+                message = f"Due in {days_left} days"
+            else:
+                continue  # not close enough to remind
+            reminders.append({
+                "id": f"assn:{a['id']}",
+                "kind": "assignment",
+                "title": a["title"],
+                "message": message,
+                "when": a["dueDate"],
+                "severity": severity,
+                "link": f"/assignments/{a['id']}/take",
+            })
+
+        # Study plan tasks scheduled today or overdue
+        tasks = await db.study_plans.find(
+            {"studentId": cu["id"], "status": {"$ne": "COMPLETED"}}, {"_id": 0}
+        ).to_list(200)
+        for t in tasks:
+            try:
+                d = date.fromisoformat(t["date"])
+            except Exception:
+                continue
+            if d == today:
+                reminders.append({
+                    "id": f"task:{t['id']}",
+                    "kind": "study-task",
+                    "title": t["title"],
+                    "message": f"Scheduled today • {t.get('subject', '')} • {t.get('durationMin', 0)}m",
+                    "when": t["date"],
+                    "severity": "info",
+                    "link": "/plan",
+                })
+            elif d < today:
+                reminders.append({
+                    "id": f"task:{t['id']}",
+                    "kind": "study-task",
+                    "title": t["title"],
+                    "message": f"Missed on {t['date']} — reschedule?",
+                    "when": t["date"],
+                    "severity": "warning",
+                    "link": "/plan",
+                })
+
+    elif cu["role"] == "TEACHER":
+        assignments = await db.assignments.find({"createdBy": cu["id"]}, {"_id": 0}).to_list(200)
+        for a in assignments:
+            try:
+                due = date.fromisoformat(a["dueDate"])
+            except Exception:
+                continue
+            days_left = (due - today).days
+            submitted = await db.assignment_submissions.count_documents(
+                {"assignmentId": a["id"], "status": "COMPLETED"}
+            )
+            total = len(a.get("studentIds", []))
+            pct = int((submitted / total) * 100) if total else 0
+            if 0 <= days_left <= 1 and pct < 60:
+                reminders.append({
+                    "id": f"tassn:{a['id']}",
+                    "kind": "low-submission",
+                    "title": a["title"],
+                    "message": f"{pct}% submitted • Due {'today' if days_left == 0 else 'tomorrow'}",
+                    "when": a["dueDate"],
+                    "severity": "warning",
+                    "link": f"/assignments/{a['id']}",
+                })
+
+    elif cu["role"] == "PARENT":
+        # Child's upcoming assignments not yet submitted
+        user = await db.users.find_one({"id": cu["id"]})
+        child_id = user.get("profile", {}).get("childId")
+        if not child_id:
+            child_email = user.get("profile", {}).get("childEmail")
+            child = await db.users.find_one({"email": child_email})
+            child_id = child["id"] if child else None
+        if child_id:
+            assignments = await db.assignments.find({"studentIds": child_id}, {"_id": 0}).to_list(200)
+            for a in assignments:
+                sub = await db.assignment_submissions.find_one(
+                    {"assignmentId": a["id"], "studentId": child_id}, {"_id": 0}
+                )
+                if sub and sub.get("status") == "COMPLETED":
+                    continue
+                try:
+                    due = date.fromisoformat(a["dueDate"])
+                except Exception:
+                    continue
+                days_left = (due - today).days
+                if 0 <= days_left <= 2:
+                    reminders.append({
+                        "id": f"passn:{a['id']}",
+                        "kind": "child-assignment",
+                        "title": a["title"],
+                        "message": f"Your child's assignment • Due {'today' if days_left == 0 else 'tomorrow' if days_left == 1 else 'in 2 days'}",
+                        "when": a["dueDate"],
+                        "severity": "info" if days_left > 0 else "warning",
+                        "link": "/",
+                    })
+
+    # Sort: danger > warning > info; then by soonest when
+    order = {"danger": 0, "warning": 1, "info": 2}
+    reminders.sort(key=lambda r: (order.get(r["severity"], 3), r["when"]))
+    return {"reminders": reminders, "count": len(reminders)}
+
+
 # ─────────────────────────── Study Plan ───────────────────────────
 @api.get("/study-plan/me")
 async def my_plan(cu=Depends(get_current_user)):
