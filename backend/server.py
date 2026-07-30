@@ -1,89 +1,615 @@
-from fastapi import FastAPI, APIRouter
+"""Project Vidya - AI adaptive learning platform (CBSE Grades 8-10)."""
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, UploadFile, File, Form
+from fastapi.staticfiles import StaticFiles
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
+import uuid
+import shutil
 import logging
 from pathlib import Path
-from pydantic import BaseModel, Field, ConfigDict
-from typing import List
-import uuid
+from pydantic import BaseModel, Field, EmailStr
+from typing import List, Optional, Any, Dict
 from datetime import datetime, timezone
 
+from auth import hash_password, verify_password, create_token, get_current_user
+from ai_service import extract_chapter_from_pdf, generate_questions_for_topic
+from seed import seed_all
 
 ROOT_DIR = Path(__file__).parent
-load_dotenv(ROOT_DIR / '.env')
+load_dotenv(ROOT_DIR / ".env")
 
-# MongoDB connection
-mongo_url = os.environ['MONGO_URL']
+UPLOAD_DIR = Path(os.environ.get("UPLOAD_DIR", ROOT_DIR / "uploads"))
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+mongo_url = os.environ["MONGO_URL"]
 client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ['DB_NAME']]
+db = client[os.environ["DB_NAME"]]
 
-# Create the main app without a prefix
-app = FastAPI()
+app = FastAPI(title="Project Vidya API")
+api = APIRouter(prefix="/api")
 
-# Create a router with the /api prefix
-api_router = APIRouter(prefix="/api")
+logger = logging.getLogger("vidya")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
 
-# Define Models
-class StatusCheck(BaseModel):
-    model_config = ConfigDict(extra="ignore")  # Ignore MongoDB's _id field
-    
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    client_name: str
-    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+def _now():
+    return datetime.now(timezone.utc).isoformat()
 
-class StatusCheckCreate(BaseModel):
-    client_name: str
 
-# Add your routes to the router instead of directly to app
-@api_router.get("/")
+# ─────────────────────────── Models ───────────────────────────
+class SignupIn(BaseModel):
+    name: str
+    email: EmailStr
+    password: str
+    role: str  # STUDENT | TEACHER | PARENT | ADMIN
+    grade: Optional[int] = None
+    school: Optional[str] = None
+    parentEmail: Optional[str] = None
+    className: Optional[str] = None
+    subject: Optional[str] = None
+
+
+class LoginIn(BaseModel):
+    email: EmailStr
+    password: str
+
+
+class QuizAnswerIn(BaseModel):
+    questionId: str
+    userResponse: Any
+    timeTakenSeconds: int = 0
+
+
+class FlagQuestionIn(BaseModel):
+    questionId: str
+    reason: str
+
+
+# ─────────────────────────── Auth ───────────────────────────
+@api.post("/auth/signup")
+async def signup(payload: SignupIn):
+    if await db.users.find_one({"email": payload.email}):
+        raise HTTPException(400, "Email already registered")
+    role = payload.role.upper()
+    if role not in {"STUDENT", "TEACHER", "PARENT", "ADMIN"}:
+        raise HTTPException(400, "Invalid role")
+    user_id = str(uuid.uuid4())
+    profile: Dict[str, Any] = {}
+    if role == "STUDENT":
+        profile = {
+            "grade": payload.grade or 10,
+            "school": payload.school or "",
+            "parentEmail": payload.parentEmail or "",
+            "teacherIds": [],
+            "className": payload.className or "",
+            "streak": 0,
+        }
+    elif role == "TEACHER":
+        profile = {"school": payload.school or "", "subject": payload.subject or "", "className": payload.className or ""}
+    elif role == "PARENT":
+        profile = {"childEmail": payload.parentEmail or ""}
+    doc = {
+        "id": user_id, "role": role, "name": payload.name, "email": payload.email,
+        "passwordHash": hash_password(payload.password), "profile": profile, "createdAt": _now(),
+    }
+    await db.users.insert_one(doc)
+    token = create_token(user_id, role)
+    return {"token": token, "user": _public_user(doc)}
+
+
+@api.post("/auth/login")
+async def login(payload: LoginIn):
+    user = await db.users.find_one({"email": payload.email})
+    if not user or not verify_password(payload.password, user["passwordHash"]):
+        raise HTTPException(401, "Invalid email or password")
+    token = create_token(user["id"], user["role"])
+    return {"token": token, "user": _public_user(user)}
+
+
+@api.get("/auth/me")
+async def me(cu=Depends(get_current_user)):
+    user = await db.users.find_one({"id": cu["id"]})
+    if not user:
+        raise HTTPException(404, "User not found")
+    return _public_user(user)
+
+
+def _public_user(u: dict) -> dict:
+    return {"id": u["id"], "role": u["role"], "name": u["name"], "email": u["email"], "profile": u.get("profile", {})}
+
+
+# ─────────────────────────── Chapters & Upload ───────────────────────────
+@api.get("/chapters")
+async def list_chapters(grade: Optional[int] = None, subject: Optional[str] = None, cu=Depends(get_current_user)):
+    q: Dict[str, Any] = {}
+    if grade: q["grade"] = grade
+    if subject: q["subject"] = subject
+    chapters = await db.chapters.find(q, {"_id": 0}).to_list(500)
+    return chapters
+
+
+@api.get("/chapters/{chapter_id}")
+async def get_chapter(chapter_id: str, cu=Depends(get_current_user)):
+    ch = await db.chapters.find_one({"id": chapter_id}, {"_id": 0})
+    if not ch:
+        raise HTTPException(404, "Chapter not found")
+    return ch
+
+
+@api.post("/chapters/upload")
+async def upload_chapter(
+    file: UploadFile = File(...),
+    grade: int = Form(...),
+    subject: str = Form(...),
+    cu=Depends(get_current_user),
+):
+    """Upload a PDF, extract topics via Gemini, generate questions per topic."""
+    if cu["role"] not in ("TEACHER", "ADMIN", "STUDENT"):
+        raise HTTPException(403, "Not allowed")
+    if not file.filename.lower().endswith((".pdf", ".png", ".jpg", ".jpeg")):
+        raise HTTPException(400, "Only PDF/PNG/JPG allowed")
+    # Save to local disk
+    chapter_id = str(uuid.uuid4())
+    safe_name = f"{chapter_id}_{file.filename}"
+    save_path = UPLOAD_DIR / safe_name
+    with save_path.open("wb") as f:
+        shutil.copyfileobj(file.file, f)
+    # Extract via Gemini (only PDFs for now)
+    try:
+        if save_path.suffix.lower() == ".pdf":
+            extracted = await extract_chapter_from_pdf(str(save_path), grade, subject)
+        else:
+            # Fallback for images: minimal structure
+            extracted = {"chapterTitle": file.filename, "chapterNumber": 1, "topics": []}
+    except Exception as e:
+        logger.exception("extraction failed")
+        raise HTTPException(500, f"AI extraction failed: {e}")
+
+    topics = extracted.get("topics", [])
+    # normalise weights
+    n = max(len(topics), 1)
+    for t in topics:
+        t.setdefault("weight", round(1.0 / n, 2))
+
+    chapter_doc = {
+        "id": chapter_id,
+        "grade": grade,
+        "subject": subject,
+        "chapterNumber": extracted.get("chapterNumber", 1),
+        "title": extracted.get("chapterTitle", file.filename),
+        "sourceFileUrl": f"/api/files/{safe_name}",
+        "extractedTopics": topics,
+        "uploadedBy": cu["id"],
+        "createdAt": _now(),
+    }
+    await db.chapters.insert_one(chapter_doc)
+    chapter_doc.pop("_id", None)
+
+    # Generate questions per topic (best effort)
+    total_qs = 0
+    for topic in topics[:6]:  # cap topics
+        try:
+            qs = await generate_questions_for_topic(
+                extracted.get("chapterTitle", ""), subject, grade, topic, count=5
+            )
+            docs = []
+            for q in qs:
+                docs.append({
+                    "id": str(uuid.uuid4()),
+                    "chapterId": chapter_id,
+                    "topicId": topic["topicId"],
+                    "type": q.get("type", "MCQ"),
+                    "difficultyLevel": float(q.get("difficultyLevel", 0.5)),
+                    "bloomsTaxonomy": q.get("bloomsTaxonomy", "Understanding"),
+                    "questionText": q.get("questionText", ""),
+                    "options": q.get("options"),
+                    "correctOptionId": q.get("correctOptionId"),
+                    "sampleAnswer": q.get("sampleAnswer"),
+                    "explanation": q.get("explanation", ""),
+                    "createdAt": _now(),
+                    "flagged": False,
+                })
+            if docs:
+                await db.questions.insert_many(docs)
+                total_qs += len(docs)
+        except Exception as e:
+            logger.warning(f"Question gen failed for topic {topic.get('topicId')}: {e}")
+
+    return {"chapterId": chapter_id, "topics": len(topics), "questionsGenerated": total_qs, "chapter": chapter_doc}
+
+
+@api.get("/files/{filename}")
+async def get_file(filename: str):
+    from fastapi.responses import FileResponse
+    p = UPLOAD_DIR / filename
+    if not p.exists():
+        raise HTTPException(404, "File not found")
+    return FileResponse(p)
+
+
+# ─────────────────────────── Questions ───────────────────────────
+@api.get("/questions")
+async def list_questions(chapterId: Optional[str] = None, topicId: Optional[str] = None, cu=Depends(get_current_user)):
+    q: Dict[str, Any] = {}
+    if chapterId: q["chapterId"] = chapterId
+    if topicId: q["topicId"] = topicId
+    return await db.questions.find(q, {"_id": 0}).to_list(500)
+
+
+@api.post("/questions/flag")
+async def flag_q(payload: FlagQuestionIn, cu=Depends(get_current_user)):
+    r = await db.questions.update_one(
+        {"id": payload.questionId},
+        {"$set": {"flagged": True, "flagReason": payload.reason, "flaggedBy": cu["id"], "flaggedAt": _now()}},
+    )
+    if not r.matched_count:
+        raise HTTPException(404, "Question not found")
+    return {"ok": True}
+
+
+@api.get("/questions/flagged")
+async def flagged_qs(cu=Depends(get_current_user)):
+    if cu["role"] != "ADMIN":
+        raise HTTPException(403, "Admin only")
+    return await db.questions.find({"flagged": True}, {"_id": 0}).to_list(200)
+
+
+@api.post("/questions/{qid}/resolve")
+async def resolve_q(qid: str, cu=Depends(get_current_user)):
+    if cu["role"] != "ADMIN":
+        raise HTTPException(403, "Admin only")
+    await db.questions.update_one({"id": qid}, {"$set": {"flagged": False}})
+    return {"ok": True}
+
+
+# ─────────────────────────── Assessment (adaptive) ───────────────────────────
+@api.post("/assessments/start")
+async def start_assessment(chapterId: str, cu=Depends(get_current_user)):
+    ch = await db.chapters.find_one({"id": chapterId}, {"_id": 0})
+    if not ch:
+        raise HTTPException(404, "Chapter not found")
+    all_qs = await db.questions.find({"chapterId": chapterId}, {"_id": 0}).to_list(500)
+    if not all_qs:
+        raise HTTPException(400, "No questions available for this chapter yet")
+    # Sort by difficulty, pick a starting question near 0.5
+    all_qs.sort(key=lambda x: x["difficultyLevel"])
+    session_id = str(uuid.uuid4())
+    doc = {
+        "id": session_id,
+        "studentId": cu["id"],
+        "chapterId": chapterId,
+        "chapterTitle": ch["title"],
+        "subject": ch["subject"],
+        "status": "IN_PROGRESS",
+        "currentAbilityEstimate": 0.5,
+        "responses": [],
+        "questionPool": [q["id"] for q in all_qs],
+        "startedAt": _now(),
+        "topicsCovered": [],
+    }
+    await db.assessment_sessions.insert_one(doc)
+    first_q = _pick_next_question(all_qs, 0.5, set())
+    return {"sessionId": session_id, "question": _sanitize_q(first_q), "progress": {"current": 1, "total": min(len(all_qs), 15)}}
+
+
+def _sanitize_q(q):
+    if not q: return None
+    # Do not send correct answer to client
+    out = {k: v for k, v in q.items() if k not in ("correctOptionId", "sampleAnswer", "explanation")}
+    return out
+
+
+def _pick_next_question(pool, ability, asked_ids):
+    remaining = [q for q in pool if q["id"] not in asked_ids]
+    if not remaining:
+        return None
+    # Choose question with difficulty closest to ability
+    remaining.sort(key=lambda q: abs(q["difficultyLevel"] - ability))
+    return remaining[0]
+
+
+@api.post("/assessments/{session_id}/answer")
+async def submit_answer(session_id: str, payload: QuizAnswerIn, cu=Depends(get_current_user)):
+    session = await db.assessment_sessions.find_one({"id": session_id}, {"_id": 0})
+    if not session:
+        raise HTTPException(404, "Session not found")
+    q = await db.questions.find_one({"id": payload.questionId}, {"_id": 0})
+    if not q:
+        raise HTTPException(404, "Question not found")
+
+    is_correct = False
+    if q["type"] == "MCQ":
+        try:
+            is_correct = int(payload.userResponse) == int(q["correctOptionId"])
+        except Exception:
+            is_correct = False
+    else:
+        # For SA/LA in MVP, self-graded: any non-empty answer marked correct=None
+        is_correct = bool(payload.userResponse)
+
+    # Update ability (simple Elo-like update)
+    ability = session.get("currentAbilityEstimate", 0.5)
+    diff = q["difficultyLevel"]
+    delta = 0.08 if is_correct else -0.08
+    # Adjust more if answer was contra-expectation
+    if is_correct and diff > ability:
+        delta = 0.12
+    if not is_correct and diff < ability:
+        delta = -0.12
+    ability = max(0.1, min(0.95, ability + delta))
+
+    response_entry = {
+        "questionId": q["id"], "userResponse": payload.userResponse,
+        "isCorrect": is_correct, "timeTakenSeconds": payload.timeTakenSeconds,
+        "topicId": q.get("topicId"), "difficultyLevel": diff, "type": q["type"],
+    }
+    responses = session["responses"] + [response_entry]
+    asked_ids = {r["questionId"] for r in responses}
+
+    # Get pool
+    pool = await db.questions.find({"id": {"$in": session["questionPool"]}}, {"_id": 0}).to_list(500)
+    max_q = min(len(pool), 15)
+    next_q = None if len(responses) >= max_q else _pick_next_question(pool, ability, asked_ids)
+
+    status = "COMPLETED" if next_q is None else "IN_PROGRESS"
+    correct_count = sum(1 for r in responses if r["isCorrect"])
+    score = round((correct_count / len(responses)) * 100, 1) if responses else 0
+
+    update = {
+        "$set": {
+            "currentAbilityEstimate": ability, "responses": responses,
+            "status": status, "score": score,
+        }
+    }
+    if status == "COMPLETED":
+        update["$set"]["completedAt"] = _now()
+        # Update mastery per topic
+        await _update_mastery_from_session(session["studentId"], session["subject"], responses)
+
+    await db.assessment_sessions.update_one({"id": session_id}, update)
+
+    return {
+        "isCorrect": is_correct if q["type"] == "MCQ" else None,
+        "explanation": q.get("explanation", ""),
+        "correctOptionId": q.get("correctOptionId"),
+        "sampleAnswer": q.get("sampleAnswer"),
+        "nextQuestion": _sanitize_q(next_q),
+        "progress": {"current": len(responses) + (0 if next_q is None else 1), "total": max_q},
+        "status": status,
+        "score": score,
+        "ability": round(ability, 2),
+    }
+
+
+async def _update_mastery_from_session(student_id, subject, responses):
+    if not responses:
+        return
+    correct = sum(1 for r in responses if r["isCorrect"])
+    score = round((correct / len(responses)) * 100, 1)
+    level = "Novice"
+    if score >= 90: level = "Distinction"
+    elif score >= 75: level = "Expert Level"
+    elif score >= 60: level = "Level 3 Mastery"
+    elif score >= 40: level = "Level 2 Mastery"
+    else: level = "Level 1 Mastery"
+    await db.mastery.update_one(
+        {"studentId": student_id, "subject": subject},
+        {"$set": {"score": score, "level": level, "updatedAt": _now()}},
+        upsert=True,
+    )
+
+
+@api.get("/assessments/{session_id}")
+async def get_session(session_id: str, cu=Depends(get_current_user)):
+    s = await db.assessment_sessions.find_one({"id": session_id}, {"_id": 0})
+    if not s: raise HTTPException(404, "Not found")
+    return s
+
+
+@api.get("/assessments/history/me")
+async def my_assessments(cu=Depends(get_current_user)):
+    return await db.assessment_sessions.find({"studentId": cu["id"]}, {"_id": 0}).sort("startedAt", -1).to_list(50)
+
+
+# ─────────────────────────── Study Plan ───────────────────────────
+@api.get("/study-plan/me")
+async def my_plan(cu=Depends(get_current_user)):
+    tasks = await db.study_plans.find({"studentId": cu["id"]}, {"_id": 0}).sort("date", 1).to_list(200)
+    return tasks
+
+
+@api.post("/study-plan/{task_id}/complete")
+async def complete_task(task_id: str, cu=Depends(get_current_user)):
+    await db.study_plans.update_one({"id": task_id, "studentId": cu["id"]}, {"$set": {"status": "COMPLETED", "completedAt": _now()}})
+    return {"ok": True}
+
+
+# ─────────────────────────── Student Dashboard ───────────────────────────
+@api.get("/dashboard/student")
+async def student_dashboard(cu=Depends(get_current_user)):
+    if cu["role"] != "STUDENT":
+        raise HTTPException(403, "Students only")
+    user = await db.users.find_one({"id": cu["id"]})
+    mastery = await db.mastery.find({"studentId": cu["id"]}, {"_id": 0}).to_list(20)
+    tasks = await db.study_plans.find({"studentId": cu["id"]}, {"_id": 0}).sort("date", 1).to_list(50)
+    upcoming = await db.chapters.find({"grade": user.get("profile", {}).get("grade", 10)}, {"_id": 0}).to_list(20)
+    sessions = await db.assessment_sessions.find({"studentId": cu["id"]}, {"_id": 0}).sort("startedAt", -1).to_list(20)
+    # Study heatmap: last 14 days count of completed
+    from collections import defaultdict
+    heat = defaultdict(int)
+    for s in sessions:
+        if s.get("completedAt"):
+            d = s["completedAt"][:10]
+            heat[d] += 1
+    return {
+        "user": _public_user(user),
+        "streak": user.get("profile", {}).get("streak", 0),
+        "masteryProgress": mastery,
+        "studyPlan": tasks[:10],
+        "chapters": upcoming,
+        "recentSessions": sessions[:5],
+        "activityHeatmap": dict(heat),
+    }
+
+
+# ─────────────────────────── Teacher Dashboard ───────────────────────────
+@api.get("/dashboard/teacher")
+async def teacher_dashboard(cu=Depends(get_current_user)):
+    if cu["role"] != "TEACHER":
+        raise HTTPException(403, "Teachers only")
+    user = await db.users.find_one({"id": cu["id"]})
+    class_name = user.get("profile", {}).get("className", "")
+    students = await db.users.find({"role": "STUDENT", "profile.className": class_name}, {"_id": 0}).to_list(200)
+    student_ids = [s["id"] for s in students]
+    # Heatmap: group students into 3 groups, aggregate mastery per topic
+    all_mastery = await db.mastery.find({"studentId": {"$in": student_ids}}, {"_id": 0}).to_list(500)
+    chapters = await db.chapters.find({"grade": 10}, {"_id": 0}).to_list(20)
+    topics = []
+    for ch in chapters[:2]:
+        for t in ch.get("extractedTopics", [])[:3]:
+            topics.append({"topicId": t["topicId"], "title": t["title"], "chapter": ch["title"]})
+    # Fake grouping for demo
+    heatmap = []
+    import random
+    random.seed(42)
+    for gi, group in enumerate(["Group Alpha", "Group Beta", "Group Gamma"]):
+        row = {"group": group, "cells": []}
+        for t in topics[:6]:
+            score = random.randint(35, 95)
+            status = "MASTERY" if score >= 75 else "DEVELOPING" if score >= 50 else "CRITICAL"
+            row["cells"].append({"topic": t["title"], "score": score, "status": status})
+        heatmap.append(row)
+    # Recent assignments
+    recent_sessions = await db.assessment_sessions.find({"studentId": {"$in": student_ids}}, {"_id": 0}).sort("startedAt", -1).to_list(20)
+    return {
+        "user": _public_user(user),
+        "className": class_name,
+        "studentsCount": len(students),
+        "activeCount": max(1, int(len(students) * 0.93)),
+        "criticalGap": {"topic": "Quadratic Equations", "pct": 65, "delta": -14, "concept": "Discriminant Theory"},
+        "heatmap": heatmap,
+        "recentAssignments": [
+            {"title": "Quadratic Problems Set B", "subject": "Mathematics", "dueDate": "Oct 24", "completion": 92, "total": 42, "submitted": 39},
+            {"title": "Genetics and Heredity Quiz", "subject": "Biology", "dueDate": "Oct 22", "completion": 45, "total": 45, "submitted": 20},
+            {"title": "Optics: Lens Formula Lab", "subject": "Physics", "dueDate": "Oct 20", "completion": 100, "total": 45, "submitted": 45},
+        ],
+        "todaySchedule": [
+            {"time": "10:30 AM - 11:20 AM", "title": "10-A Mathematics", "note": "Lab: Geometric Proofs", "highlight": True},
+            {"time": "12:30 PM - 01:20 PM", "title": "10-B Mathematics", "note": "Quadratic Equations Review", "highlight": False},
+        ],
+        "students": [{"id": s["id"], "name": s["name"], "email": s["email"]} for s in students],
+    }
+
+
+@api.get("/students/{student_id}/report")
+async def student_report(student_id: str, cu=Depends(get_current_user)):
+    if cu["role"] not in ("TEACHER", "PARENT", "ADMIN", "STUDENT"):
+        raise HTTPException(403)
+    student = await db.users.find_one({"id": student_id}, {"_id": 0})
+    if not student: raise HTTPException(404, "Not found")
+    mastery = await db.mastery.find({"studentId": student_id}, {"_id": 0}).to_list(20)
+    sessions = await db.assessment_sessions.find({"studentId": student_id}, {"_id": 0}).sort("startedAt", -1).to_list(20)
+    return {"student": _public_user(student), "mastery": mastery, "sessions": sessions}
+
+
+# ─────────────────────────── Parent Dashboard ───────────────────────────
+@api.get("/dashboard/parent")
+async def parent_dashboard(cu=Depends(get_current_user)):
+    if cu["role"] != "PARENT":
+        raise HTTPException(403, "Parents only")
+    user = await db.users.find_one({"id": cu["id"]})
+    child_id = user.get("profile", {}).get("childId")
+    if not child_id:
+        child_email = user.get("profile", {}).get("childEmail")
+        child = await db.users.find_one({"email": child_email})
+        child_id = child["id"] if child else None
+    if not child_id:
+        raise HTTPException(400, "No child linked")
+    child = await db.users.find_one({"id": child_id}, {"_id": 0})
+    mastery = await db.mastery.find({"studentId": child_id}, {"_id": 0}).to_list(20)
+    sessions = await db.assessment_sessions.find({"studentId": child_id}, {"_id": 0}).sort("startedAt", -1).to_list(20)
+    # Weekly digest
+    total_hours = 8
+    retention = 84
+    predicted_low = 88
+    predicted_high = 94
+    # Compute predicted from mastery avg
+    if mastery:
+        avg = sum(m["score"] for m in mastery) / len(mastery)
+        predicted_low = int(max(0, avg - 5))
+        predicted_high = int(min(100, avg + 5))
+    # Radar chart
+    subjects = ["Math", "Science", "Social Studies", "English", "Hindi"]
+    radar = []
+    for s in subjects:
+        subj_key = s if s != "Math" else "Mathematics"
+        m = next((mm for mm in mastery if mm["subject"] == subj_key), None)
+        radar.append({"subject": s, "aarav": m["score"] if m else 60, "classAvg": max(40, (m["score"] if m else 60) - 10)})
+    # Priority topic
+    lowest = min(mastery, key=lambda x: x["score"]) if mastery else None
+    return {
+        "user": _public_user(user),
+        "child": _public_user(child),
+        "week": 42,
+        "activeHours": total_hours,
+        "masteryDeltaSubject": "Science",
+        "masteryDelta": 12,
+        "knowledgeRetention": retention,
+        "predictedRange": [predicted_low, predicted_high],
+        "radar": radar,
+        "priorityAction": {"topic": "Reflection of Light", "reason": "Needs support"} if lowest else None,
+        "topicFocus": [
+            {"title": "Quadratic Equations", "subject": "Mathematics", "meta": "Next Quiz Tomorrow", "kind": "next"},
+            {"title": "Rise of Nationalism", "subject": "Social Studies", "meta": "Mastered", "kind": "done"},
+        ],
+        "recentActivity": [
+            {"title": f"Completed session on {s.get('chapterTitle','chapter')}", "meta": f"Scored {s.get('score', 0)}%", "when": s.get("completedAt", s.get("startedAt", ""))[:10]}
+            for s in sessions[:4] if s.get("status") == "COMPLETED"
+        ],
+        "masteryProgress": mastery,
+    }
+
+
+# ─────────────────────────── Admin ───────────────────────────
+@api.get("/admin/stats")
+async def admin_stats(cu=Depends(get_current_user)):
+    if cu["role"] != "ADMIN":
+        raise HTTPException(403)
+    return {
+        "users": await db.users.count_documents({}),
+        "students": await db.users.count_documents({"role": "STUDENT"}),
+        "teachers": await db.users.count_documents({"role": "TEACHER"}),
+        "chapters": await db.chapters.count_documents({}),
+        "questions": await db.questions.count_documents({}),
+        "flagged": await db.questions.count_documents({"flagged": True}),
+        "sessions": await db.assessment_sessions.count_documents({}),
+    }
+
+
+# ─────────────────────────── Root ───────────────────────────
+@api.get("/")
 async def root():
-    return {"message": "Hello World"}
+    return {"service": "Project Vidya", "status": "ok"}
 
-@api_router.post("/status", response_model=StatusCheck)
-async def create_status_check(input: StatusCheckCreate):
-    status_dict = input.model_dump()
-    status_obj = StatusCheck(**status_dict)
-    
-    # Convert to dict and serialize datetime to ISO string for MongoDB
-    doc = status_obj.model_dump()
-    doc['timestamp'] = doc['timestamp'].isoformat()
-    
-    _ = await db.status_checks.insert_one(doc)
-    return status_obj
 
-@api_router.get("/status", response_model=List[StatusCheck])
-async def get_status_checks():
-    # Exclude MongoDB's _id field from the query results
-    status_checks = await db.status_checks.find({}, {"_id": 0}).to_list(1000)
-    
-    # Convert ISO string timestamps back to datetime objects
-    for check in status_checks:
-        if isinstance(check['timestamp'], str):
-            check['timestamp'] = datetime.fromisoformat(check['timestamp'])
-    
-    return status_checks
-
-# Include the router in the main app
-app.include_router(api_router)
-
+app.include_router(api)
 app.add_middleware(
-    CORSMiddleware,
-    allow_credentials=True,
-    allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
-    allow_methods=["*"],
-    allow_headers=["*"],
+    CORSMiddleware, allow_credentials=True,
+    allow_origins=os.environ.get("CORS_ORIGINS", "*").split(","),
+    allow_methods=["*"], allow_headers=["*"],
 )
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+
+@app.on_event("startup")
+async def _seed():
+    try:
+        await seed_all(db)
+    except Exception as e:
+        logger.warning(f"Seed skipped: {e}")
+
 
 @app.on_event("shutdown")
-async def shutdown_db_client():
+async def _shutdown():
     client.close()

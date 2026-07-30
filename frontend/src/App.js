@@ -1,56 +1,62 @@
-import { useEffect } from "react";
+import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { Toaster } from "sonner";
 import "@/App.css";
-import { BrowserRouter, Routes, Route } from "react-router-dom";
-import axios from "axios";
-import { HOME } from "@/constants/testIds";
+import { AuthProvider, useAuth } from "@/lib/auth";
+import Layout from "@/components/Layout";
+import Login from "@/pages/Login";
+import Signup from "@/pages/Signup";
+import StudentDashboard from "@/pages/StudentDashboard";
+import TeacherDashboard from "@/pages/TeacherDashboard";
+import ParentDashboard from "@/pages/ParentDashboard";
+import AdaptiveQuiz from "@/pages/AdaptiveQuiz";
+import UploadChapter from "@/pages/UploadChapter";
+import MyCourses from "@/pages/MyCourses";
+import StudyPlan from "@/pages/StudyPlan";
+import PracticeZone from "@/pages/PracticeZone";
+import AdminReview from "@/pages/AdminReview";
+import Results from "@/pages/Results";
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
-const API = `${BACKEND_URL}/api`;
-
-const Home = () => {
-  const helloWorldApi = async () => {
-    try {
-      const response = await axios.get(`${API}/`);
-      console.log(response.data.message);
-    } catch (e) {
-      console.error(e, `errored out requesting / api`);
-    }
-  };
-
-  useEffect(() => {
-    helloWorldApi();
-  }, []);
-
-  return (
-    <div>
-      <header className="App-header">
-        <a
-          data-testid={HOME.emergentLink}
-          className="App-link"
-          href="https://emergent.sh"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <img src="https://avatars.githubusercontent.com/in/1201222?s=120&u=2686cf91179bbafbc7a71bfbc43004cf9ae1acea&v=4" />
-        </a>
-        <p className="mt-5">Building something incredible ~!</p>
-      </header>
-    </div>
-  );
-};
-
-function App() {
-  return (
-    <div className="App">
-      <BrowserRouter>
-        <Routes>
-          <Route path="/" element={<Home />}>
-            <Route index element={<Home />} />
-          </Route>
-        </Routes>
-      </BrowserRouter>
-    </div>
-  );
+function Home() {
+  const { user } = useAuth();
+  if (!user) return <Navigate to="/login" replace />;
+  if (user.role === "STUDENT") return <StudentDashboard />;
+  if (user.role === "TEACHER") return <TeacherDashboard />;
+  if (user.role === "PARENT") return <ParentDashboard />;
+  if (user.role === "ADMIN") return <AdminReview />;
+  return null;
 }
 
-export default App;
+function Protected({ children }) {
+  const { user } = useAuth();
+  if (!user) return <Navigate to="/login" replace />;
+  return <Layout>{children}</Layout>;
+}
+
+export default function App() {
+  return (
+    <AuthProvider>
+      <Toaster position="top-right" richColors />
+      <BrowserRouter>
+        <Routes>
+          <Route path="/login" element={<Login />} />
+          <Route path="/signup" element={<Signup />} />
+          <Route path="/" element={<Protected><Home /></Protected>} />
+          <Route path="/courses" element={<Protected><MyCourses /></Protected>} />
+          <Route path="/practice" element={<Protected><PracticeZone /></Protected>} />
+          <Route path="/plan" element={<Protected><StudyPlan /></Protected>} />
+          <Route path="/results" element={<Protected><Results /></Protected>} />
+          <Route path="/upload" element={<Protected><UploadChapter /></Protected>} />
+          <Route path="/quiz/:sessionId" element={<Protected><AdaptiveQuiz /></Protected>} />
+          <Route path="/admin/flagged" element={<Protected><AdminReview /></Protected>} />
+          <Route path="/students" element={<Protected><TeacherDashboard /></Protected>} />
+          <Route path="/assignments" element={<Protected><TeacherDashboard /></Protected>} />
+          <Route path="/question-bank" element={<Protected><TeacherDashboard /></Protected>} />
+          <Route path="/activity" element={<Protected><ParentDashboard /></Protected>} />
+          <Route path="/insights" element={<Protected><ParentDashboard /></Protected>} />
+          <Route path="/predicted" element={<Protected><ParentDashboard /></Protected>} />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </BrowserRouter>
+    </AuthProvider>
+  );
+}
