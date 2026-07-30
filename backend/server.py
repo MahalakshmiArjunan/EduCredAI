@@ -821,14 +821,14 @@ async def student_topic_mastery(student_id: str, subject: Optional[str] = None, 
 
 # ─────────────────────────── Notifications / Reminders ───────────────────────────
 @api.get("/leaderboard/weekly")
-async def weekly_leaderboard(cu=Depends(get_current_user)):
-    """Compute this week's points per student. Scope: user's class (or grade fallback)."""
+async def weekly_leaderboard(period: str = "weekly", cu=Depends(get_current_user)):
+    """Points per student. period=weekly (this week) or all-time (season)."""
     from datetime import date, timedelta as td
     today = date.today()
     monday = today - td(days=today.weekday())
     monday_iso = monday.isoformat()
+    is_alltime = period == "all-time"
 
-    # Find peer group: same class if set, else same grade
     user = await db.users.find_one({"id": cu["id"]})
     if not user:
         raise HTTPException(404)
@@ -856,18 +856,24 @@ async def weekly_leaderboard(cu=Depends(get_current_user)):
 
     peers = await db.users.find(peer_query, {"_id": 0}).to_list(500)
     if not peers:
-        return {"scope": class_name or f"Grade {grade}" or "All", "weekOf": monday_iso, "leaderboard": []}
+        return {"scope": class_name or f"Grade {grade}" or "All", "period": period,
+                "weekOf": monday_iso, "leaderboard": []}
     peer_ids = [p["id"] for p in peers]
 
-    # Fetch this week's completed sessions
     sessions = await db.assessment_sessions.find(
         {"studentId": {"$in": peer_ids}, "status": "COMPLETED"}, {"_id": 0}
-    ).to_list(2000)
-    week_sessions = [s for s in sessions if (s.get("completedAt") or "")[:10] >= monday_iso]
+    ).to_list(5000)
+    if not is_alltime:
+        sessions = [s for s in sessions if (s.get("completedAt") or "")[:10] >= monday_iso]
 
-    # Aggregate points
-    board: Dict[str, Dict[str, Any]] = {p["id"]: {"studentId": p["id"], "name": p["name"], "sessions": 0, "correct": 0, "questions": 0, "totalScore": 0.0, "streak": p.get("profile", {}).get("streak", 0)} for p in peers}
-    for s in week_sessions:
+    board: Dict[str, Dict[str, Any]] = {
+        p["id"]: {"studentId": p["id"], "name": p["name"], "sessions": 0, "correct": 0,
+                  "questions": 0, "totalScore": 0.0,
+                  "streak": p.get("profile", {}).get("streak", 0),
+                  "longestStreak": p.get("profile", {}).get("longestStreak", 0)}
+        for p in peers
+    }
+    for s in sessions:
         e = board.get(s["studentId"])
         if not e: continue
         e["sessions"] += 1
@@ -877,9 +883,10 @@ async def weekly_leaderboard(cu=Depends(get_current_user)):
         e["totalScore"] += float(s.get("score", 0))
 
     for e in board.values():
-        # Points: 10/session + 2/correct + score bonus + streak bonus
         avg_score = (e["totalScore"] / e["sessions"]) if e["sessions"] else 0
-        e["points"] = int(e["sessions"] * 10 + e["correct"] * 2 + avg_score / 5 + e["streak"])
+        # For all-time: use longestStreak as consistency bonus; for weekly: current streak
+        streak_bonus = e["longestStreak"] if is_alltime else e["streak"]
+        e["points"] = int(e["sessions"] * 10 + e["correct"] * 2 + avg_score / 5 + streak_bonus)
         e["avgScore"] = round(avg_score, 1)
 
     ranked = sorted(board.values(), key=lambda x: (-x["points"], -x["correct"], x["name"]))
@@ -889,6 +896,7 @@ async def weekly_leaderboard(cu=Depends(get_current_user)):
 
     return {
         "scope": class_name or (f"Grade {grade}" if grade else "All students"),
+        "period": period,
         "weekOf": monday_iso,
         "myRank": next((e["rank"] for e in ranked if e["isMe"]), None),
         "leaderboard": ranked,

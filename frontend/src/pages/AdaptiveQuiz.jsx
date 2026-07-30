@@ -20,10 +20,17 @@ export default function AdaptiveQuiz() {
   const [submitting, setSubmitting] = useState(false);
   const [chapter, setChapter] = useState(null);
   const [pdfOpen, setPdfOpen] = useState(false);
+  const [preRank, setPreRank] = useState(null);  // captured when quiz starts
 
   useEffect(() => {
     if (!state) api.get(`/assessments/${sessionId}`).then(r => setState({ ...r.data, question: null }));
   }, [sessionId]); // eslint-disable-line
+
+  // Snapshot my leaderboard rank BEFORE finishing the quiz (once)
+  useEffect(() => {
+    api.get("/leaderboard/weekly", { params: { period: "weekly" } })
+      .then(r => setPreRank(r.data.myRank)).catch(()=>{});
+  }, []); // eslint-disable-line
 
   // Fetch chapter (for PDF reference)
   useEffect(() => {
@@ -65,11 +72,25 @@ export default function AdaptiveQuiz() {
     } finally { setSubmitting(false); }
   };
 
-  const next = () => {
+  const next = async () => {
     if (!feedback) return;
     if (feedback.status === "COMPLETED") {
       toast.success(`Quiz complete! Score: ${feedback.score}%`);
-      nav("/");
+      // Rank-up celebration
+      try {
+        const r = await api.get("/leaderboard/weekly", { params: { period: "weekly" } });
+        const newRank = r.data.myRank;
+        if (preRank && newRank && newRank < preRank) {
+          const jumps = preRank - newRank;
+          toast.success(
+            `🎉 You climbed ${jumps} spot${jumps === 1 ? "" : "s"} — now ranked #${newRank}!`,
+            { duration: 6000 }
+          );
+        } else if (newRank && !preRank) {
+          toast.success(`🎊 You just joined the leaderboard at #${newRank}!`, { duration: 6000 });
+        }
+      } catch { /* ignore rank check errors */ }
+      setTimeout(() => nav("/"), 1200);
       return;
     }
     setState({ ...state, question: feedback.nextQuestion, progress: feedback.progress });
