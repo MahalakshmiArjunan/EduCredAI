@@ -8,7 +8,8 @@ import { toast } from "sonner";
 import { GraduationCap } from "lucide-react";
 
 const DEMO = [
-  { role: "STUDENT", email: "student@vidya.in", password: "student123" },
+  { role: "STUDENT · G10", email: "student@vidya.in", password: "student123" },
+  { role: "STUDENT · G8", email: "student8@vidya.in", password: "student123" },
   { role: "TEACHER", email: "teacher@vidya.in", password: "teacher123" },
   { role: "PARENT", email: "parent@vidya.in", password: "parent123" },
   { role: "ADMIN", email: "admin@vidya.in", password: "admin123" },

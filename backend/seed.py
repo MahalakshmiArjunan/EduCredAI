@@ -17,6 +17,7 @@ async def seed_all(db):
 
     teacher_id = str(uuid.uuid4())
     student_id = str(uuid.uuid4())
+    student8_id = str(uuid.uuid4())
     parent_id = str(uuid.uuid4())
     admin_id = str(uuid.uuid4())
 
@@ -43,6 +44,22 @@ async def seed_all(db):
                 "teacherIds": [teacher_id],
                 "className": "10-A",
                 "streak": 5,
+            },
+            "createdAt": _now(),
+        },
+        {
+            "id": student8_id,
+            "role": "STUDENT",
+            "name": "Isha Verma",
+            "email": "student8@vidya.in",
+            "passwordHash": hash_password("student123"),
+            "profile": {
+                "grade": 8,
+                "school": "Delhi Public School",
+                "parentEmail": "",
+                "teacherIds": [teacher_id],
+                "className": "8-A",
+                "streak": 2,
             },
             "createdAt": _now(),
         },
@@ -105,6 +122,27 @@ async def seed_all(db):
                 {"topicId": "french-rev", "title": "French Revolution & Nationalism", "contentChunk": "Ideas of nation, la patrie, le citoyen; symbols of new France.", "weight": 0.4},
                 {"topicId": "unification", "title": "Unification of Germany & Italy", "contentChunk": "Otto von Bismarck and Giuseppe Garibaldi in 19th-century Europe.", "weight": 0.35},
                 {"topicId": "balkan", "title": "The Balkan Question", "contentChunk": "Nationalism in the Balkans leading up to WWI.", "weight": 0.25},
+            ],
+        },
+        {
+            "grade": 8,
+            "subject": "Science",
+            "chapterNumber": 9,
+            "title": "Force and Laws of Motion",
+            "topics": [
+                {"topicId": "g8-force", "title": "Understanding Force", "contentChunk": "A push or pull on an object; balanced vs unbalanced forces.", "weight": 0.3},
+                {"topicId": "g8-newton-1", "title": "Newton's First Law", "contentChunk": "An object remains at rest or in uniform motion unless acted upon by an external force (inertia).", "weight": 0.35},
+                {"topicId": "g8-newton-2", "title": "Newton's Second Law", "contentChunk": "F = ma. The acceleration of an object depends on force applied and its mass.", "weight": 0.35},
+            ],
+        },
+        {
+            "grade": 8,
+            "subject": "Mathematics",
+            "chapterNumber": 2,
+            "title": "Linear Equations in One Variable",
+            "topics": [
+                {"topicId": "g8-linear-basic", "title": "Solving Linear Equations", "contentChunk": "An equation of the form ax + b = 0. Isolate the variable using inverse operations.", "weight": 0.5},
+                {"topicId": "g8-word-problems", "title": "Word Problems", "contentChunk": "Translate real-life situations into linear equations and solve for the unknown.", "weight": 0.5},
             ],
         },
     ]
@@ -226,5 +264,37 @@ def _sample_questions(subject, chapter_title, topic, chapter_id):
              "options": [{"optionId": 1, "text": "Otto von Bismarck"}, {"optionId": 2, "text": "Giuseppe Mazzini"},
                           {"optionId": 3, "text": "Napoleon III"}, {"optionId": 4, "text": "Kaiser Wilhelm I"}],
              "correctOptionId": 1, "explanation": "Bismarck engineered unification via three wars (1864, 1866, 1870-71)."},
+        ]
+    if topic["topicId"] == "g8-force":
+        return [
+            {"id": str(_u.uuid4()), **base, "type": "MCQ", "difficultyLevel": 0.3, "bloomsTaxonomy": "Remembering",
+             "questionText": "A force can:",
+             "options": [{"optionId": 1, "text": "Only change the direction of motion"}, {"optionId": 2, "text": "Only change the speed"},
+                          {"optionId": 3, "text": "Change the speed, direction, or shape of an object"}, {"optionId": 4, "text": "Do nothing to an object"}],
+             "correctOptionId": 3, "explanation": "A force is capable of changing motion, direction, or the shape of an object."},
+        ]
+    if topic["topicId"] == "g8-newton-1":
+        return [
+            {"id": str(_u.uuid4()), **base, "type": "MCQ", "difficultyLevel": 0.45, "bloomsTaxonomy": "Understanding",
+             "questionText": "Newton's first law is also known as the law of:",
+             "options": [{"optionId": 1, "text": "Momentum"}, {"optionId": 2, "text": "Inertia"},
+                          {"optionId": 3, "text": "Gravitation"}, {"optionId": 4, "text": "Action-reaction"}],
+             "correctOptionId": 2, "explanation": "Objects resist change in their state of motion — this property is called inertia."},
+        ]
+    if topic["topicId"] == "g8-newton-2":
+        return [
+            {"id": str(_u.uuid4()), **base, "type": "MCQ", "difficultyLevel": 0.55, "bloomsTaxonomy": "Applying",
+             "questionText": "A 2 kg object accelerates at 3 m/s². The net force on it is:",
+             "options": [{"optionId": 1, "text": "1.5 N"}, {"optionId": 2, "text": "5 N"},
+                          {"optionId": 3, "text": "6 N"}, {"optionId": 4, "text": "9 N"}],
+             "correctOptionId": 3, "explanation": "F = m×a = 2 × 3 = 6 N."},
+        ]
+    if topic["topicId"] == "g8-linear-basic":
+        return [
+            {"id": str(_u.uuid4()), **base, "type": "MCQ", "difficultyLevel": 0.35, "bloomsTaxonomy": "Applying",
+             "questionText": "Solve for x: 3x + 5 = 20",
+             "options": [{"optionId": 1, "text": "3"}, {"optionId": 2, "text": "5"},
+                          {"optionId": 3, "text": "7"}, {"optionId": 4, "text": "15"}],
+             "correctOptionId": 2, "explanation": "3x = 20 − 5 = 15, so x = 5."},
         ]
     return []
