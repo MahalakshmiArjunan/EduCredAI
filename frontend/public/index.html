@@ -113,7 +113,21 @@
         <script type="module">
             import { createChat } from 'https://cdn.jsdelivr.net/npm/@n8n/chat/dist/chat.bundle.es.js';
             createChat({
-                webhookUrl: 'https://mahaarjunan.app.n8n.cloud/webhook/f059da6a-ed1d-4187-9d93-ce49c6e91fb2/chat'
+                webhookUrl: 'https://mahaarjunan.app.n8n.cloud/webhook/f059da6a-ed1d-4187-9d93-ce49c6e91fb2/chat',
+                initialMessages: [
+                    'Hi there! 👋',
+                    "I'm the Project Vidya assistant. Ask me about your quizzes, study plan, or account."
+                ],
+                i18n: {
+                    en: {
+                        title: 'Project Vidya Support',
+                        subtitle: "We're here to help — 24×7",
+                        footer: '',
+                        getStarted: 'New conversation',
+                        inputPlaceholder: 'Type your question…',
+                        closeButtonTooltip: 'Close chat'
+                    }
+                }
             });
         </script>
     </body>
