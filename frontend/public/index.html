@@ -8,6 +8,7 @@
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
         <link href="https://fonts.googleapis.com/css2?family=Inter:wght@600&display=swap" rel="stylesheet" />
+        <link href="https://cdn.jsdelivr.net/npm/@n8n/chat/dist/style.css" rel="stylesheet" />
         <!--
         manifest.json provides metadata used when your web app is installed on a
         user's mobile device or desktop. See https://developers.google.com/web/fundamentals/web-app-manifest/
@@ -107,6 +108,12 @@
                     recordCrossOriginIframes: true,
                     capturePerformance: false,
                 },
+            });
+        </script>
+        <script type="module">
+            import { createChat } from 'https://cdn.jsdelivr.net/npm/@n8n/chat/dist/chat.bundle.es.js';
+            createChat({
+                webhookUrl: 'https://mahaarjunan.app.n8n.cloud/webhook/f059da6a-ed1d-4187-9d93-ce49c6e91fb2/chat'
             });
         </script>
     </body>
