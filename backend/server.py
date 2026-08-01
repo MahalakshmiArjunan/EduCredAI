@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from auth import hash_password, verify_password, create_token, get_current_user
 from ai_service import extract_chapter_from_pdf, generate_questions_for_topic
 from email_service import send_parent_digest, send_all_parent_digests
+from doc_service import build_key_points_docx, build_question_paper_docx
 from seed import seed_all
 
 ROOT_DIR = Path(__file__).parent
@@ -256,6 +257,48 @@ async def get_file(filename: str):
     if not p.exists():
         raise HTTPException(404, "File not found")
     return FileResponse(p)
+
+
+# ─────────────────────────── Chapter Downloadables ───────────────────────────
+def _safe_filename(text: str) -> str:
+    import re
+    slug = re.sub(r"[^A-Za-z0-9]+", "-", text).strip("-").lower()
+    return slug or "chapter"
+
+
+@api.get("/chapters/{chapter_id}/key-points.docx")
+async def download_key_points(chapter_id: str, cu=Depends(get_current_user)):
+    from fastapi.responses import StreamingResponse
+    from io import BytesIO
+    ch = await db.chapters.find_one({"id": chapter_id}, {"_id": 0})
+    if not ch:
+        raise HTTPException(404, "Chapter not found")
+    data = build_key_points_docx(ch)
+    filename = f"key-points-{_safe_filename(ch.get('title',''))}.docx"
+    return StreamingResponse(
+        BytesIO(data),
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@api.get("/chapters/{chapter_id}/question-paper.docx")
+async def download_question_paper(chapter_id: str, include_answers: bool = True, cu=Depends(get_current_user)):
+    from fastapi.responses import StreamingResponse
+    from io import BytesIO
+    ch = await db.chapters.find_one({"id": chapter_id}, {"_id": 0})
+    if not ch:
+        raise HTTPException(404, "Chapter not found")
+    questions = await db.questions.find({"chapterId": chapter_id}, {"_id": 0}).to_list(500)
+    if not questions:
+        raise HTTPException(400, "No questions available for this chapter yet")
+    data = build_question_paper_docx(ch, questions, include_answers=include_answers)
+    filename = f"practice-paper-{_safe_filename(ch.get('title',''))}.docx"
+    return StreamingResponse(
+        BytesIO(data),
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 # ─────────────────────────── Questions ───────────────────────────

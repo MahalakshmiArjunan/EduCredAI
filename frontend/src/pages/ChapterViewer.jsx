@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import NotesPanel from "@/components/NotesPanel";
-import { FileText, ArrowLeft, Play, BookOpen, ExternalLink, Download, StickyNote } from "lucide-react";
+import { FileText, ArrowLeft, Play, BookOpen, ExternalLink, Download, StickyNote, FileDown, Sparkles } from "lucide-react";
 
 export default function ChapterViewer() {
   const { id } = useParams();
@@ -30,6 +30,29 @@ export default function ChapterViewer() {
   const pdfUrl = chapter.sourceFileUrl ? `${API.replace(/\/api$/, "")}${chapter.sourceFileUrl}` : null;
   const byTopic = (tid) => questions.filter(q => q.topicId === tid);
 
+  const download = async (kind) => {
+    const path = kind === "key-points" ? "key-points.docx" : "question-paper.docx";
+    try {
+      const r = await api.get(`/chapters/${id}/${path}`, { responseType: "blob" });
+      const blob = new Blob([r.data], {
+        type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${kind === "key-points" ? "key-points" : "practice-paper"}-${(chapter.title||"chapter").replace(/[^a-z0-9]+/gi,"-").toLowerCase()}.docx`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      const msg = err.response?.status === 400
+        ? "No questions available yet for this chapter."
+        : "Download failed. Please try again.";
+      alert(msg);
+    }
+  };
+
   return (
     <div className="max-w-[1600px] mx-auto space-y-4" data-testid="chapter-viewer">
       <Link to="/courses" className="text-sm text-[color:var(--v-primary)] hover:underline inline-flex items-center gap-1">
@@ -46,12 +69,18 @@ export default function ChapterViewer() {
           <h1 className="text-3xl font-bold">{chapter.title}</h1>
           <p className="text-slate-500 mt-1">{chapter.extractedTopics?.length || 0} topics • {questions.length} practice questions</p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 flex-wrap">
           {pdfUrl && (
             <a href={pdfUrl} target="_blank" rel="noreferrer">
               <Button variant="outline" data-testid="open-pdf-btn"><ExternalLink size={14} className="mr-1"/> Open PDF</Button>
             </a>
           )}
+          <Button variant="outline" onClick={() => download("key-points")} data-testid="download-key-points-btn">
+            <Sparkles size={14} className="mr-1"/> Key Points .docx
+          </Button>
+          <Button variant="outline" onClick={() => download("question-paper")} data-testid="download-question-paper-btn">
+            <FileDown size={14} className="mr-1"/> Practice Paper .docx
+          </Button>
           <Button onClick={start} className="v-primary-gradient text-white" data-testid="start-practice-btn"><Play size={14} className="mr-1"/> Start Practice</Button>
         </div>
       </div>
