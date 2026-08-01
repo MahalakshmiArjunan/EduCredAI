@@ -104,3 +104,49 @@ Return ONLY the JSON array."""
     if not isinstance(data, list):
         raise ValueError("Questions response was not a list")
     return data
+
+
+async def generate_key_points_for_chapter(chapter: Dict[str, Any]) -> Dict[str, List[str]]:
+    """For each topic in the chapter, return 5-7 concise bullet key points via Gemini.
+
+    Returns: {topicId: [bullet1, bullet2, ...]}
+    """
+    topics = chapter.get("extractedTopics", []) or []
+    if not topics:
+        return {}
+
+    topics_block = "\n".join(
+        f"- topicId: {t['topicId']}\n  title: {t['title']}\n  summary: {t.get('contentChunk', '')}"
+        for t in topics
+    )
+    system = (
+        "You are an expert CBSE tutor creating concise revision notes. "
+        "Produce clear, NCERT-aligned bullet points that a student can skim before a quiz. "
+        "Return STRICT JSON only."
+    )
+    chat = LlmChat(
+        api_key=EMERGENT_LLM_KEY,
+        session_id=f"keypoints-{uuid.uuid4()}",
+        system_message=system,
+    ).with_model(MODEL_PROVIDER, MODEL_NAME)
+
+    prompt = (
+        f"Grade {chapter.get('grade')} {chapter.get('subject')} · Chapter: \"{chapter.get('title')}\".\n\n"
+        f"For every topic below, produce 5-7 short, self-contained bullet points that capture the "
+        f"most important facts, formulas, definitions and examples. Each bullet should be 1 sentence, "
+        f"<= 22 words, NCERT-aligned, and standalone (no 'this' / 'that' references).\n\n"
+        f"Topics:\n{topics_block}\n\n"
+        f"Return JSON of the exact shape: "
+        f'{{ "topics": [ {{ "topicId": "<id>", "keyPoints": ["...","..."] }} ] }} '
+        f"Return ONLY the JSON, no prose."
+    )
+    resp = await chat.send_message(UserMessage(text=prompt))
+    data = _extract_json(resp)
+    result: Dict[str, List[str]] = {}
+    if isinstance(data, dict) and isinstance(data.get("topics"), list):
+        for item in data["topics"]:
+            tid = item.get("topicId")
+            pts = item.get("keyPoints") or []
+            if tid and isinstance(pts, list):
+                result[tid] = [str(p).strip() for p in pts if str(p).strip()]
+    return result
